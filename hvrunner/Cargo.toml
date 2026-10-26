@@ -1,0 +1,26 @@
+[package]
+name = "hvrunner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+cargo_metadata = "0.23.1"
+git2 = {version = "0.21.0", features = ["https", "vendored-openssl"] }
+json = "0.12.4"
+ovmf-prebuilt = "0.2.9"
+reqwest = { version = "0.13.5", features = ["blocking"] } 
+thiserror = "2.0.21"
+toml = "0.5.6"
+wait-timeout = "0.2.1"
+
+
+[package.metadata.hvrunner]
+image_path = "target/kernel.iso" 
+run-args = [
+	#"-d","int",
+	"-smp", "4",
+	"-drive", "file=nvme.qcow2,if=none,id=nvm",
+	"-device", "nvme,drive=nvm,serial=B16B00B5",
+	"--trace", "pci_nvme*"
+]
