@@ -6,7 +6,7 @@ pub mod console;
 pub mod apic;
 pub mod acpi;
 pub mod keyboard;
-pub mod fs;
+pub mod block;
 pub mod pci;
 
 
@@ -29,5 +29,5 @@ pub fn init() {
 
 	keyboard::init();
     pci::init();
-    fs::init();
+    block::init();
 }

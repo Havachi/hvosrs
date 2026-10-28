@@ -7,7 +7,7 @@ use crate::{arch::x86_64::{asm::current_cr3, gdt::set_tss_rsp0}, klog, ksprint, 
 
 
 const MAX_PROCESS: usize = 1024;
-pub static PROCESS_TABLE: Mutex<[Option<Process>;MAX_PROCESS]> = Mutex::new([None; MAX_PROCESS]);
+pub static PROCESS_TABLE: Mutex<[Option<Process>;MAX_PROCESS]> = Mutex::new([const{None}; MAX_PROCESS]);
 pub static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler::new());
 pub static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
 pub static CURRENT_TICKS: AtomicU32 = AtomicU32::new(0);
@@ -16,6 +16,21 @@ pub static CURRENT_PID: AtomicU32 = AtomicU32::new(0xFFFF);
 /// Top of the current process kernel stack (same value as TSS RSP0); used on syscall entry.
 #[unsafe(no_mangle)]
 pub static CURRENT_KSTACK_TOP: AtomicU64 = AtomicU64::new(0);
+
+/// Top of the current process kernel stack (TSS RSP0); used when entering syscalls.
+pub fn current_kstack_top() -> u64 {
+	CURRENT_KSTACK_TOP.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// Called from the syscall asm stub before switching off `SYSCALL_STACK`.
+#[unsafe(no_mangle)]
+pub extern "C" fn hvos_syscall_kstack_top() -> u64 {
+	let top = current_kstack_top();
+	if top != 0 {
+		return top;
+	}
+	crate::arch::x86_64::syscall::syscall_stack_top()
+}
 
 pub static GLOBAL_TICKS: AtomicU32 = AtomicU32::new(0);
 const QUEUE_REFRESH_TICK: u32 = 5000;
@@ -29,19 +44,18 @@ pub fn init() {
 		pt[0] = Some(idle_proc);
 		drop(pt);
 	}
-	klog!("scheduler init done")
+	klog!("Scheduler init done")
 }
 
 pub fn add_proc(pid: ProcessId, proc: Process) {
+	let prio = proc.priority;
 	{
 		let mut pt = PROCESS_TABLE.lock();
 		pt[pid as usize] = Some(proc);
-		drop(pt);
 	}
 	{
 		let mut sched = SCHEDULER.lock();
-		sched.run_queues[proc.priority as u8 as usize].push(pid);
-		drop(sched);
+		sched.run_queues[prio as usize].push(pid);
 	}
 }
 
@@ -154,7 +168,6 @@ impl Scheduler {
 					set_tss_rsp0(VirtAddr::new(next_proc.kstack_top));
 					CURRENT_KSTACK_TOP.store(next_proc.kstack_top, core::sync::atomic::Ordering::Release);
 					drop(pt);
-					ksprint!("switching to {}\n", pid);
 					return (old_rsp_ptr, new_rsp, new_cr3);
 				}
 				drop(pt);
@@ -194,7 +207,6 @@ pub fn schedule() {
 
 	let (final_old_rsp, new_rsp, new_cr3) = sched.execute_switch(old_rsp_ptr);
 	drop(sched);
-	ksprint!("old_rsp: {:#x} rsp: {:#x} cr3: {:#x}\n", final_old_rsp as u64, new_rsp, new_cr3);
 	let active_cr3 = current_cr3();
 	if active_cr3 != new_cr3 {
 		unsafe {
@@ -296,14 +308,12 @@ pub fn reschedule() {
 		refresh_queues();
 	} 
 	if NEED_RESCHED.load(Ordering::Relaxed) {
-		ksprint!("RESHED\n");
 		NEED_RESCHED.store(false, Ordering::Relaxed);
 		schedule();
 	}
 }
 
 pub fn refresh_queues() {
-	ksprint!("R");
 	let mut sched = SCHEDULER.lock();
 	let mut pt = PROCESS_TABLE.lock();
     let current_active_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Acquire);
@@ -371,7 +381,30 @@ pub fn sleep_current(ticks: u32) {
 
 pub fn process_with_pid(pid: ProcessId) -> Option<Process> {
 	if let Some(pt) = PROCESS_TABLE.try_lock() {
-		return pt[pid as usize];
+		return pt[pid as usize].clone();
+	}
+	None
+}
+
+pub fn with_current_process<F, R>(f: F) -> Option<R>
+where
+	F: FnOnce(&mut Process) -> R,
+{
+	let pid = CURRENT_PID.load(core::sync::atomic::Ordering::Acquire);
+	if pid as usize >= MAX_PROCESS {
+		return None;
+	}
+	let mut pt = PROCESS_TABLE.lock();
+	let proc = pt[pid as usize].as_mut()?;
+	Some(f(proc))
+}
+
+pub fn alloc_fd(proc: &mut Process) -> Option<i32> {
+	use crate::scheduler::process::MAX_FD_PER_PROCESS;
+	for fd in 3..MAX_FD_PER_PROCESS {
+		if proc.fd_table[fd].is_none() {
+			return Some(fd as i32);
+		}
 	}
 	None
 }

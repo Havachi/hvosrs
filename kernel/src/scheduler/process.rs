@@ -3,11 +3,11 @@ use core::sync::atomic::AtomicU32;
 
 use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
 
-use crate::{arch::x86_64::{asm::current_cr3, paging::{map_phys_page, new_page_table, switch_pml4}}, elf::load_elf, ksprint, memory::{PAGE_SIZE, USER_RANGE_END, allocate_n_pages, pmm::PhysAllocator}, scheduler::{Priority, exit_to_user}};
+use crate::{arch::x86_64::{asm::current_cr3, paging::{map_phys_page, new_page_table, switch_pml4}}, elf::load_elf, ksprint, memory::{PAGE_SIZE, USER_RANGE_END, allocate_n_pages, pmm::PhysAllocator}, scheduler::{Priority, exit_to_user}, vfs::file::VfsFile};
 
 pub type ProcessId = u32;
 pub static NEXT_PID: AtomicU32 = AtomicU32::new(10);
-
+pub const MAX_FD_PER_PROCESS: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
@@ -45,7 +45,7 @@ impl CpuContext {
 	}
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Process {
 	pub pid: ProcessId,
 	pub ppid: ProcessId,
@@ -59,6 +59,7 @@ pub struct Process {
 	pub wake_tick: u32,
 	pub next_pid: Option<ProcessId>,
 	pub priority: Priority,
+	pub fd_table: [Option<VfsFile>; MAX_FD_PER_PROCESS]
 }
 
 
@@ -106,6 +107,7 @@ impl Process {
 				*ksp = 0;
 			}
 		}
+		let fd_table = [const {None}; MAX_FD_PER_PROCESS];
 
 		Self {
 			pid,
@@ -120,6 +122,7 @@ impl Process {
 			next_pid: None,
 			kstack_top: kernel_stack_top,
 			ctx: CpuContext::new(),
+			fd_table
 		}
 	}
 

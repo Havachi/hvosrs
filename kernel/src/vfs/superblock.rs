@@ -1,10 +1,10 @@
-use crate::vfs::{dentry::VfsDentry, filesystem::VfsFileSystemType, inode::VfsInode};
+use crate::vfs::{dentry::VfsDentry, inode::VfsInode};
 
 
 pub struct VfsSuperblock {
 	block_size: usize,
 	max_file_size: usize,
-	fs_type: VfsFileSystemType,
+	fs_type_id: u32,
 	root: VfsDentry,
 
 }

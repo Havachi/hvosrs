@@ -1,7 +1,7 @@
 
 use spin::Mutex;
 
-use crate::{drivers::fs::{ahci::AhciDevice, atapio::AtaPioDevice}, kerror, klog};
+use crate::{drivers::block::{ahci::AhciDevice, atapio::AtaPioDevice}, kerror, klog};
 
 pub mod ahci;
 pub mod nvme;

@@ -1,12 +1,18 @@
-use core::arch::global_asm;
+use core::{arch::global_asm, ptr::addr_of};
 
 use x86_64::{VirtAddr, registers::{model_specific::{LStar, SFMask, Star}, rflags::RFlags}};
 
 use crate::{arch::x86_64::gdt::{KERNEL_CODE, KERNEL_DATA, USER_CODE, USER_DATA}, klog, kpanic};
 
-/// Dedicated stack for syscall handling (must match `SYSCALL_STACK_SIZE` in the asm stub).
+pub const SYSCALL_STACK_SIZE: usize = 8192;
+/// Trap frame and `sysret` epilogue only; handlers run on the process kernel stack.
 #[unsafe(no_mangle)]
-static mut SYSCALL_STACK: [u8; 32768] = [0; 32768];
+static mut SYSCALL_STACK: [u8; SYSCALL_STACK_SIZE] = [0; SYSCALL_STACK_SIZE];
+
+/// Fallback when no process is scheduled (`CURRENT_KSTACK_TOP == 0`).
+pub fn syscall_stack_top() -> u64 {
+	unsafe { addr_of!(SYSCALL_STACK).cast::<u8>() as u64 + SYSCALL_STACK_SIZE as u64 }
+}
 
 #[repr(C)]
 #[derive(Debug)]
@@ -42,7 +48,7 @@ global_asm!(
 syscall_entry:
 	mov r8, rsp
 	lea r10, [rip + SYSCALL_STACK]
-	add r10, 32768
+	add r10, {stack_size}
 	mov rsp, r10
 
 	// Push order (first = highest address): user_rsp, rip, rflags, nr, rbx, rcx, rdx, rsi, rdi, rbp, pad, r9, r10, r11, r12..r15
@@ -65,12 +71,15 @@ syscall_entry:
 	push r14
 	push r15
 
-	mov rdi, rax
-	mov rsi, rsp
-	sub rsp, 8
-
+	mov rbx, rax
+	mov r12, rsp
+	call hvos_syscall_kstack_top
+	mov rsp, rax
+	and rsp, -16
+	mov rdi, rbx
+	mov rsi, r12
 	call syscall_dispatch_rs
-	add rsp, 8
+	mov rsp, r12
 
 	// Store syscall return value into saved rax slot (rsp+112 at this point)
 	mov [rsp + 112], rax
@@ -100,5 +109,6 @@ syscall_exit:
 
 	cli
 	sysretq
-	"#
+	"#,
+	stack_size = const SYSCALL_STACK_SIZE,
 );

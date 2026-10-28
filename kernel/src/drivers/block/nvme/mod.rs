@@ -8,7 +8,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use crate::{
-	drivers::fs::DeviceManager,
+	drivers::block::DeviceManager,
 	kerror, ksprint,
 	memory::mmio::mmio_alloc,
 };
@@ -46,7 +46,6 @@ pub fn probe(dev_mgr: &mut DeviceManager) -> Result<usize, &'static str> {
 		let mut d = shared.lock();
 		d.get_active_namespace(list_buf_phys)?
 	};
-	ksprint!("Found {} active namespace\n", list.len());
 
 	let cntlid = shared.lock().cntlid();
 	for nsid in list {

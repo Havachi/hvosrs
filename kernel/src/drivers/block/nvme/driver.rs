@@ -90,14 +90,7 @@ impl NvmeDriver {
 			Ok(off) => off,
 			Err(_) => return Ok(None),
 		};
-		ksprint!("NVMe controller has msi-x cap. offset={:#x}\n", msix_offset);
 		let msix_cfg = pci.enable_and_parse_msix(msix_offset);
-		ksprint!(
-			"MSI-X Config: bar:{:#x},tbl_off:{:#x},tblsz={}\n",
-			msix_cfg.bar_index,
-			msix_cfg.table_byte_offset,
-			msix_cfg.table_size
-		);
 
 		let bar_idx = msix_cfg.bar_index;
 		let bar_lo = pci.read_bar(bar_idx).ok_or("MSI-X BAR read failed")?;
@@ -362,7 +355,6 @@ impl NvmeDriver {
 			cdw11 |= (vector as u32) << 16;
 		}
 		cmd.cdw11 = cdw11;
-		ksprint!("qid={qid},cq_phys={cq_phys:#x}\n");
 		self.submit_admin_cmd(cmd)
 	}
 

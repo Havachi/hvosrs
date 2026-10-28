@@ -16,6 +16,8 @@ pub mod elf;
 pub mod syscalls;
 //pub mod vfs;
 pub mod errno;
+pub mod fs;
+pub mod vfs;
 
 pub mod limine_requests {
 	use limine::{BaseRevision, RequestsEndMarker, RequestsStartMarker, request::*};
@@ -81,18 +83,6 @@ macro_rules! kerror {
 #[macro_export]
 macro_rules! kpanic {
 	($($arg:tt)*) => { $crate::debug::_kpanic(format_args!($($arg)*)) };
-}
-
-pub struct InitChecklist {
-	pub core: bool,
-	pub memory: bool,
-	pub console: bool
-}
-
-impl InitChecklist {
-	pub const fn new() -> Self {
-		Self { core: false, memory:false, console:false }
-	}
 }
 
 pub fn limine_base_revision() -> u64 {

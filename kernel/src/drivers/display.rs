@@ -28,7 +28,6 @@ unsafe impl Sync for KernelDisplay {}
 pub fn from_limine_framebuffer(value: &limine::framebuffer::Framebuffer) -> KernelDisplay {
 	let raw = value.address() as u64;
 	let address = kernel_framebuffer_ptr(value, raw);
-	klog!("fb raw={:#x} virt={:p} bytes={}", raw, address, value.height * value.pitch);
 	KernelDisplay {
 		address,
 		width: value.width,

@@ -2,7 +2,7 @@
 #![no_main]
 use kernel::limine_requests::MODULES;
 use kernel::scheduler::process;
-use kernel::{drivers, interrupts, kerror, klog, scheduler};
+use kernel::{drivers, interrupts, kerror, klog, scheduler, vfs};
 use kernel::{kprint, memory};
 use kernel::arch::x86_64::{
     cpu, gdt, idt, syscall
@@ -17,6 +17,9 @@ fn init() {
     drivers::init();
     interrupts::init();
     scheduler::init();
+
+    vfs::init();
+
     x86_64::instructions::interrupts::enable();
     syscall::init();
 

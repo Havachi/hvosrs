@@ -16,8 +16,11 @@ fn sys_nosys(_:u64,_:u64,_:u64,_:u64,_:u64,_:u64, _: &mut SyscallFrame) -> i64 {
 
 const fn make_table() -> [SyscallFn; NR_SYSCALLS] {
 	let mut t = [sys_nosys as SyscallFn; NR_SYSCALLS];
-	t[SYS_WRITE] = |_,fd,buf,len,_,_,_| sys_write(fd as i32, buf, len as usize);
-	t[SYS_OPEN] = |_,path,flags,mode,_,_,_| sys_open(path, flags, mode);
+	t[SYS_READ] = |_, fd, buf, len, _, _, _| sys_read(fd as i32, buf, len as usize);
+	t[SYS_WRITE] = |_, fd, buf, len, _, _, _| sys_write(fd as i32, buf, len as usize);
+	t[SYS_OPEN] = |_, path, flags, mode, _, _, _| sys_open(path, flags, mode);
+	t[SYS_CLOSE] = |_, fd, _, _, _, _, _| sys_close(fd as i32);
+	t[SYS_LSEEK] = |_, fd, offset, whence, _, _, _| sys_lseek(fd as i32, offset as i64, whence as i32);
 	t
 }
 
@@ -26,6 +29,7 @@ static DISPATCH_TABLE:[SyscallFn; NR_SYSCALLS] = make_table();
 
 
 /// Called from the syscall asm stub: kernel stack is already set up.
+#[inline(never)]
 #[unsafe(no_mangle)]
 pub extern "C" fn syscall_dispatch_rs(syscall_no: u64, frame: &mut SyscallFrame) -> i64 {
 	let user_cr3 = current_cr3();

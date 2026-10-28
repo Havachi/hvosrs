@@ -29,6 +29,9 @@ fn received() -> bool {
 
 pub fn write_byte(b: u8) {
 	while !is_transmit_empty() {}
+	if b == b'\n' {
+		unsafe { Port::<u8>::new(COM1).write(b'\r'); }
+	}
 	unsafe { Port::<u8>::new(COM1).write(b); }
 }
 

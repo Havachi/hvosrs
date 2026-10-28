@@ -15,6 +15,7 @@ pub fn errno() -> i64 {
 
 #[non_exhaustive]
 #[repr(u64)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum KernelErrors {
 	///Operation not permitted
 	EPERM = 1,
@@ -28,5 +29,13 @@ pub enum KernelErrors {
 	EEXIST = 17,
 	///Not a directory
 	ENOTDIR = 20,
-	EINVAL = 22
+	EISDIR = 21,
+	EINVAL = 22,
+	EBADF = 9,
+}
+
+impl KernelErrors {
+	pub fn to_neg_errno(self) -> i64 {
+		-(self as u64 as i64)
+	}
 }

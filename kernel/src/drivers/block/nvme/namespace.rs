@@ -3,7 +3,7 @@ use spin::Mutex;
 use x86_64::VirtAddr;
 
 use crate::{
-	drivers::fs::{BlockDevice, nvme::driver::NvmeDriver},
+	drivers::block::{BlockDevice, nvme::driver::NvmeDriver},
 	memory::{PAGE_SIZE, vmm::virt_to_phys},
 };
 

@@ -127,8 +127,18 @@ extern "x86-interrupt" fn invalid_opcode_handler(
 }
 
 extern "x86-interrupt" fn gpf_handler(
-	_sf: InterruptStackFrame, err: u64)
+	sf: InterruptStackFrame, err: u64)
 {
+	ksprint!("-------- # GPF # --------\n");
+	ksprint!("code: {:#x}\n", err);
+	ksprint!("rip: {:#x}\n", sf.instruction_pointer.as_u64());
+	ksprint!("rsp: {:#x}\n", sf.stack_pointer.as_u64());
+	ksprint!("cs: {:#x}\n", sf.code_segment.0);
+	ksprint!("----------------------------\n");
+	loop {
+		unsafe { core::arch::asm!("hlt") }
+	}
+
 	kpanic!("GENERAL PROTECTION FAULT ! {err}\n");
 }
 
@@ -195,7 +205,7 @@ extern "x86-interrupt" fn idt_kbd_interrupt_handler(_stack_frame: InterruptStack
 }
 
 extern "x86-interrupt" fn idt_nvme_interrupt_handler (_stack_frame: InterruptStackFrame) {
-	crate::drivers::fs::nvme::interrupt_service();
+	crate::drivers::block::nvme::interrupt_service();
 
 	if let Some(lapic) = LAPIC.lock().as_mut() {
 		unsafe { 

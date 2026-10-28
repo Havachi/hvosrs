@@ -8,6 +8,7 @@ use x86_64::{
 
 use crate::{
 	arch::x86_64::paging::{KERNEL_PML4, switch_pml4},
+	errno::KernelErrors,
 	memory::{PAGE_SIZE, USER_RANGE, vmm::phys_to_virt},
 	syscalls::errno::EFAULT,
 };
@@ -144,4 +145,56 @@ pub fn copy_from_user(len: usize, src: u64) -> Result<Vec<u8>, i64> {
 	out.resize(len, 0);
 	copy_from_user_into(&mut out, src)?;
 	Ok(out)
+}
+
+/// Copy a NUL-terminated string from user space (at most `max_len` bytes, excluding NUL).
+pub fn copy_user_cstr(src: u64, max_len: usize) -> Result<Vec<u8>, i64> {
+	if src == 0 {
+		return Err(EFAULT);
+	}
+	let mut out = Vec::new();
+	for i in 0..max_len {
+		let mut byte = [0u8; 1];
+		copy_from_user_into(&mut byte, src + i as u64)?;
+		if byte[0] == 0 {
+			return Ok(out);
+		}
+		out.push(byte[0]);
+	}
+	let mut term = [0u8; 1];
+	copy_from_user_into(&mut term, src + max_len as u64)?;
+	if term[0] != 0 {
+		return Err(KernelErrors::EINVAL.to_neg_errno());
+	}
+	Ok(out)
+}
+
+/// Copy kernel buffer into user memory. Kernel page tables must be active.
+#[inline(never)]
+pub fn copy_to_user(dst: u64, src: &[u8]) -> Result<(), i64> {
+	let len = src.len();
+	if len == 0 {
+		return Ok(());
+	}
+	if !user_range_ok(dst, len) {
+		return Err(EFAULT);
+	}
+	let user_cr3 = SYSCALL_USER_CR3.load(Ordering::Acquire);
+	if user_cr3 == 0 {
+		return Err(EFAULT);
+	}
+
+	let mut offset = 0usize;
+	while offset < len {
+		let virt = VirtAddr::new(dst + offset as u64);
+		let page_off = (virt.as_u64() & (PAGE_SIZE as u64 - 1)) as usize;
+		let chunk = (len - offset).min(PAGE_SIZE - page_off);
+
+		let host = user_host_ptr(user_cr3, virt)? as *mut u8;
+		unsafe {
+			core::ptr::copy_nonoverlapping(src.as_ptr().add(offset), host, chunk);
+		}
+		offset += chunk;
+	}
+	Ok(())
 }
