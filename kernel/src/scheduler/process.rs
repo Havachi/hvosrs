@@ -3,12 +3,12 @@ use core::sync::atomic::AtomicU32;
 
 use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
 
-use crate::{arch::x86_64::{asm::current_cr3, paging::{map_phys_page, new_page_table, switch_pml4}}, elf::load_elf, ksprint, memory::{PAGE_SIZE, USER_RANGE_END, allocate_n_pages, pmm::PhysAllocator}, scheduler::{Priority, exit_to_user}, vfs::file::VfsFile};
+use crate::{arch::x86_64::{asm::current_cr3, gdt::set_tss_rsp0, paging::{duplicate_user_address_space, map_phys_page, new_page_table, switch_pml4}, syscall::{SyscallFrame, fork_child_return}}, elf::load_elf, errno::KernelErrors, ksprint, memory::{PAGE_SIZE, USER_RANGE_END, allocate_n_pages, pmm::PhysAllocator}, scheduler::{CURRENT_KSTACK_TOP, MAX_PROCESS, Priority, exit_to_user}, vfs::file::VfsFile};
 
 pub type ProcessId = u32;
 pub static NEXT_PID: AtomicU32 = AtomicU32::new(10);
 pub const MAX_FD_PER_PROCESS: usize = 32;
-
+pub const PROCESS_BASE_NB_PAGE: usize = 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
 	Ready,
@@ -59,7 +59,8 @@ pub struct Process {
 	pub wake_tick: u32,
 	pub next_pid: Option<ProcessId>,
 	pub priority: Priority,
-	pub fd_table: [Option<VfsFile>; MAX_FD_PER_PROCESS]
+	pub fd_table: [Option<VfsFile>; MAX_FD_PER_PROCESS],
+	pub fork_resume_frame: Option<SyscallFrame>,
 }
 
 
@@ -70,22 +71,41 @@ impl Process {
 		pid: ProcessId, ppid: ProcessId, entry_point: usize, process_cr3: u64,
 	) -> Process {
 
-		let user_stack_nb_pages = 1;
+		let user_stack_nb_pages = PROCESS_BASE_NB_PAGE;
 		let user_stack_phys  = match PhysAllocator::allocate_n_frame(user_stack_nb_pages) {
 			Some(p) => p,
 			None => panic!("OOM while creating a new process")
 		};
-		let user_stack_phys_frame = PhysFrame::<Size4KiB>::containing_address(user_stack_phys);
+
 		let user_stack_page = Page::<Size4KiB>::containing_address(
 			VirtAddr::new(USER_RANGE_END - (user_stack_nb_pages * PAGE_SIZE) as u64)
 		);
 
-		unsafe { let _ = map_phys_page(
-			user_stack_page,
-			user_stack_phys_frame, 
-			PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE, 
-			&mut PhysAllocator,
-		); };
+		if user_stack_nb_pages > 1 {
+			for i in 0..user_stack_nb_pages {
+
+				let page = Page::<Size4KiB>::containing_address(
+					VirtAddr::new(USER_RANGE_END - (PAGE_SIZE * i) as u64)
+				);
+				let frame = PhysFrame::<Size4KiB>::containing_address(user_stack_phys + (PAGE_SIZE * i) as u64);
+				unsafe { let _ = map_phys_page(
+					page,
+					frame, 
+					PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE, 
+					&mut PhysAllocator,
+				); };
+
+			}
+		} else {
+			let frame = PhysFrame::<Size4KiB>::containing_address(user_stack_phys);
+			unsafe { let _ = map_phys_page(
+				user_stack_page,
+				frame, 
+				PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE, 
+				&mut PhysAllocator,
+			); };
+		}
+
 		let user_rsp = user_stack_page.start_address().as_u64() + (PAGE_SIZE * user_stack_nb_pages) as u64;
 	
 		let kernel_stack_nb_pages = 8;
@@ -122,9 +142,11 @@ impl Process {
 			next_pid: None,
 			kstack_top: kernel_stack_top,
 			ctx: CpuContext::new(),
-			fd_table
+			fd_table,
+			fork_resume_frame: None,
 		}
 	}
+
 
 	pub fn sleep(&mut self, wake_tick: u32) {
 		self.wake_tick = wake_tick;
@@ -135,6 +157,51 @@ impl Process {
 		self.wake_tick = 0;
 		self.state = ProcessState::Ready;
 	}
+
+}
+
+pub fn fork_child_from(parent: &Process, frame: &SyscallFrame) -> Result<Process, KernelErrors> {
+	let child_cr3 = duplicate_user_address_space(parent.cr3)?;
+	let child_pid = get_next_pid();
+	if child_pid as usize >= MAX_PROCESS {
+		return Err(KernelErrors::EAGAIN);
+	}
+	
+	let kernel_stack_nb_pages = 8;
+	let kernel_stack_buffer_addr = allocate_n_pages(kernel_stack_nb_pages);
+	let kernel_stack_base = kernel_stack_buffer_addr.as_u64() as usize;
+	let kernel_stack_top = kernel_stack_buffer_addr.as_u64() + (PAGE_SIZE * kernel_stack_nb_pages) as u64;
+	let mut ksp = (kernel_stack_base + PAGE_SIZE) as *mut u64;
+
+	unsafe {
+		ksp = ksp.offset(-1);
+		*ksp = frame.user_rsp;
+		ksp = ksp.offset(-1);
+		*ksp = frame.rip_saved;
+		ksp = ksp.offset(-1);
+		*ksp = fork_child_return as *const () as u64;
+	
+		for _ in 0..16 {
+			ksp = ksp.offset(-1);
+			*ksp = 0;
+		}
+	}
+
+	Ok(
+		Process {
+			pid: child_pid,
+			ppid: parent.pid,
+			state: ProcessState::Ready,
+			ctx: CpuContext::new(),
+			cr3: child_cr3,
+			rsp: frame.user_rsp,
+			fd_table: parent.fd_table.clone(),
+			krsp: ksp as u64,
+			kstack_top: kernel_stack_top,
+			ticks: 0, wake_tick: 0, next_pid: None, priority: Priority::Critial,
+			fork_resume_frame: Some(*frame),
+		}
+	)
 
 }
 
@@ -160,4 +227,88 @@ pub fn create_process_from_elf(data: &[u8], ppid: ProcessId) -> Result<(ProcessI
 	} else {
 		return Err("Failed loading the process");
 	}
+}
+
+pub fn get_next_pid() -> ProcessId {
+	NEXT_PID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn exec_replace_image(process: &mut Process, elf_bytes: &[u8]) -> Result<u64, KernelErrors> {
+	let (_, new_cr3_frame) = new_page_table(&mut PhysAllocator);
+	let kernel_cr3 = PhysFrame::containing_address(PhysAddr::new(current_cr3()));
+	unsafe { switch_pml4(new_cr3_frame) };
+	let entry = load_elf(elf_bytes).map_err(|_| KernelErrors::EINVAL)?;
+	let user_rsp = map_user_stack_in_current_cr3(PROCESS_BASE_NB_PAGE)?;
+	unsafe { switch_pml4(kernel_cr3) };
+
+	process.cr3 = new_cr3_frame.start_address().as_u64();
+	process.rsp = user_rsp;
+	process.fork_resume_frame = None;
+	(process.krsp, process.kstack_top) = kernel_stack_bootstrap(user_rsp, entry, exit_to_user as *const () as u64);
+	set_tss_rsp0(VirtAddr::new(process.kstack_top));
+	CURRENT_KSTACK_TOP.store(process.kstack_top, core::sync::atomic::Ordering::Release);
+	
+	Ok(entry)
+}
+
+pub fn map_user_stack_in_current_cr3(nb_pages: usize) -> Result<u64, KernelErrors> {
+	let user_stack_phys  = match PhysAllocator::allocate_n_frame(nb_pages) {
+		Some(p) => p,
+		None => panic!("OOM while creating a new process")
+	};
+
+	let user_stack_page = Page::<Size4KiB>::containing_address(
+		VirtAddr::new(USER_RANGE_END - (nb_pages * PAGE_SIZE) as u64)
+	);
+
+	if nb_pages > 1 {
+		for i in 0..nb_pages {
+
+			let page = Page::<Size4KiB>::containing_address(
+				VirtAddr::new(USER_RANGE_END - (PAGE_SIZE * i) as u64)
+			);
+			let frame = PhysFrame::<Size4KiB>::containing_address(user_stack_phys + (PAGE_SIZE * i) as u64);
+			unsafe { let _ = map_phys_page(
+				page,
+				frame, 
+				PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE, 
+				&mut PhysAllocator,
+			); };
+
+		}
+	} else {
+		let frame = PhysFrame::<Size4KiB>::containing_address(user_stack_phys);
+		unsafe { let _ = map_phys_page(
+			user_stack_page,
+			frame, 
+			PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE, 
+			&mut PhysAllocator,
+		); };
+	}
+	let user_rsp = user_stack_page.start_address().as_u64() + (PAGE_SIZE * nb_pages) as u64;
+	Ok(user_rsp)
+}
+
+fn kernel_stack_bootstrap(user_rsp: u64, entry_point: u64, return_fn: u64) -> (u64, u64) {
+
+	let kernel_stack_nb_pages = 8;
+	let kernel_stack_buffer_addr = allocate_n_pages(kernel_stack_nb_pages);
+	let kernel_stack_base = kernel_stack_buffer_addr.as_u64() as usize;
+	let kernel_stack_top = kernel_stack_buffer_addr.as_u64() + (PAGE_SIZE * kernel_stack_nb_pages) as u64;
+	let mut ksp = (kernel_stack_base + PAGE_SIZE) as *mut u64;
+
+	unsafe {
+		ksp = ksp.offset(-1);
+		*ksp = user_rsp;
+		ksp = ksp.offset(-1);
+		*ksp = entry_point;
+		ksp = ksp.offset(-1);
+		*ksp = return_fn;
+	
+		for _ in 0..16 {
+			ksp = ksp.offset(-1);
+			*ksp = 0;
+		}
+	}
+	(ksp as u64, kernel_stack_top)
 }

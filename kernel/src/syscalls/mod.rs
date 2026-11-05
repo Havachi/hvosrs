@@ -21,6 +21,9 @@ const fn make_table() -> [SyscallFn; NR_SYSCALLS] {
 	t[SYS_OPEN] = |_, path, flags, mode, _, _, _| sys_open(path, flags, mode);
 	t[SYS_CLOSE] = |_, fd, _, _, _, _, _| sys_close(fd as i32);
 	t[SYS_LSEEK] = |_, fd, offset, whence, _, _, _| sys_lseek(fd as i32, offset as i64, whence as i32);
+	t[SYS_FORK] = |_,_,_,_,_,_,f| sys_fork(f);
+	t[SYS_EXECVE] = |_,path,argv,envp,_,_,f| sys_execve(path, argv, envp, f);
+	t[SYS_MKDIR] = |_,path,_,_,_,_,_| sys_mkdir(path);
 	t
 }
 

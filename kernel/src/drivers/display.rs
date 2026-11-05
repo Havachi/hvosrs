@@ -3,7 +3,6 @@ use x86_64::{PhysAddr, VirtAddr, structures::paging::{PhysFrame, Size4KiB}};
 
 use crate::{
 	arch::x86_64::paging::map_mmio,
-	klog,
 	memory::{
 		DIRECT_MAP_RANGE, KCODE_RANGE, MMIO_RANGE, PAGE_SIZE,
 	},

@@ -9,8 +9,7 @@ use spin::Mutex;
 
 use crate::{
 	drivers::block::DeviceManager,
-	kerror, ksprint,
-	memory::mmio::mmio_alloc,
+	kerror, memory::mmio::mmio_alloc,
 };
 
 pub use driver::NvmeDriver;

@@ -21,17 +21,24 @@ pub enum KernelErrors {
 	EPERM = 1,
 	///No such file or directory
 	ENOENT = 2,
+	///Bad file descriptor
+	EBADF = 9,
+	///Resource temporarily unavailable
+	EAGAIN = 11,
+	///Cannot allocate memory
+	ENOMEM = 12,
 	///Permission Denied
 	EACCESS = 13,
-	//Ressource or device busy
+	///Ressource or device busy
 	EBUSY = 16,
 	///File Exist
 	EEXIST = 17,
 	///Not a directory
 	ENOTDIR = 20,
+	///Is a directory
 	EISDIR = 21,
+	///Invalid argument
 	EINVAL = 22,
-	EBADF = 9,
 }
 
 impl KernelErrors {

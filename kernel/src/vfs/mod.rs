@@ -1,9 +1,11 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use crate::{errno::KernelErrors, fs::{self, ramfs::RAMFS_NAME}, kerror, klog, ksprint, vfs::{dentry::VfsDentry, file::{VfsFile, VfsFileOpenflags}, filesystem::FST_REG, inode::NEXT_INO, path::{path_basename, path_parent, path_walk}}};
 
 static ROOT_DENTRY: Mutex<Option<Arc<VfsDentry>>> = Mutex::new(None);
+pub const MAX_EXEC_IMAGE: usize = 16 * 1024 * 1024;
+
 
 pub mod superblock;
 pub mod filesystem;
@@ -161,4 +163,27 @@ pub enum SeekOrigin {
 	SeekSet,
 	SeekCur,
 	SeekEnd,
+}
+
+pub fn read_file_all(file: &mut VfsFile) -> Result<Vec<u8>, KernelErrors> {
+	let file_len:usize = file.len();
+	if file_len == 0 {
+		return Err(KernelErrors::EINVAL);
+	}
+
+	if file_len > MAX_EXEC_IMAGE {
+		return Err(KernelErrors::ENOMEM);
+	}
+
+	let mut buf: Vec<u8> = alloc::vec![0u8; file_len];
+	file.offset = 0;
+	let mut filled: usize = 0;
+	while filled < file_len {
+		let n = read(file, &mut buf[filled..])?;
+		if n == 0 {
+			return Err(KernelErrors::EINVAL);
+		}
+		filled += n;
+	}
+	Ok(buf)
 }

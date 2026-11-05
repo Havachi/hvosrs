@@ -2,7 +2,7 @@ use core::{arch::global_asm, ptr::addr_of};
 
 use x86_64::{VirtAddr, registers::{model_specific::{LStar, SFMask, Star}, rflags::RFlags}};
 
-use crate::{arch::x86_64::gdt::{KERNEL_CODE, KERNEL_DATA, USER_CODE, USER_DATA}, klog, kpanic};
+use crate::{arch::x86_64::gdt::{KERNEL_CODE, KERNEL_DATA, USER_CODE, USER_DATA}, klog, kpanic, scheduler};
 
 pub const SYSCALL_STACK_SIZE: usize = 8192;
 /// Trap frame and `sysret` epilogue only; handlers run on the process kernel stack.
@@ -11,11 +11,11 @@ static mut SYSCALL_STACK: [u8; SYSCALL_STACK_SIZE] = [0; SYSCALL_STACK_SIZE];
 
 /// Fallback when no process is scheduled (`CURRENT_KSTACK_TOP == 0`).
 pub fn syscall_stack_top() -> u64 {
-	unsafe { addr_of!(SYSCALL_STACK).cast::<u8>() as u64 + SYSCALL_STACK_SIZE as u64 }
+	addr_of!(SYSCALL_STACK).cast::<u8>() as u64 + SYSCALL_STACK_SIZE as u64
 }
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct SyscallFrame {
     pub r15: u64, pub r14: u64, pub r13: u64, pub r12: u64,
     pub r11: u64, pub r10: u64, pub r9:  u64, pub r8:  u64,
@@ -38,7 +38,28 @@ pub fn init(){
 
 unsafe extern "C" {
 	pub unsafe fn syscall_entry();
+	pub unsafe fn resume_syscall_frame(frame: *const SyscallFrame) -> !;
 }
+
+pub unsafe extern "C" fn fork_child_return() -> ! {
+
+	let frame = {
+		let pid = scheduler::CURRENT_PID.load(core::sync::atomic::Ordering::Acquire);
+		let mut pt = scheduler::PROCESS_TABLE.lock();
+		let proc = pt[pid as usize]
+			.as_mut()
+			.expect("frk_child_return without process");
+		let mut frame = proc
+			.fork_resume_frame
+			.take()
+			.expect("fork child without frame");
+		frame.rax = 0;
+		frame
+	};
+	unsafe { resume_syscall_frame(&frame) }
+	unreachable!()
+}
+
 
 global_asm!(
 	r#"
@@ -109,6 +130,10 @@ syscall_exit:
 
 	cli
 	sysretq
+.global resume_syscall_frame
+resume_syscall_frame:
+	mov rsp, rdi
+	jmp syscall_exit
 	"#,
 	stack_size = const SYSCALL_STACK_SIZE,
 );

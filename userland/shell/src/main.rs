@@ -1,13 +1,13 @@
 #![no_std]
 #![no_main]
 
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
+use uhv::print;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    // Userland program entry point
-    loop {}
+    print("[SHELL] shell started successfully");
+	loop {
+		unsafe { core::arch::asm!("pause", options(nomem, nostack)) };
+	}
 }
+

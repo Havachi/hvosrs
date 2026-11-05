@@ -1,7 +1,7 @@
 use limine::memmap::*;
 use spin::Mutex;
 use x86_64::{PhysAddr, structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame, Size4KiB, frame}};
-use crate::{kpanic, ksprint, memory::PAGE_SIZE};
+use crate::{kerror, kpanic, ksprint, memory::PAGE_SIZE};
 
 //Whole bitmap can cover 256Gio
 const BITMAP_LEN: usize = 1024 * 1024;
@@ -137,10 +137,11 @@ fn bitmap_test(frame_idx: u64) -> bool {
 
 fn bitmap_find_free_chunk() -> usize {
 	let bmap = MEMORY_BITMAP.lock();
-	for (i, chunk) in bmap.iter().skip(1).enumerate() {
-		
-		if !(*chunk == USED_CHUNK_MASK) {
-			return i;
+
+	for chunk_idx in 0..bmap.len() {
+		if chunk_idx == 0 { continue; }
+		if bmap[chunk_idx] != USED_CHUNK_MASK {
+			return chunk_idx;
 		}
 	}
 	kpanic!("OOM in pmm");
@@ -155,6 +156,7 @@ fn bitmap_next_free() -> Option<u64> {
 			return Some(frame_idx);
 		}
 	}
+	kerror!("No physical frame found");
 	None
 }
 

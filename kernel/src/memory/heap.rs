@@ -4,7 +4,7 @@ use core::ptr::NonNull;
 use talc::{TalcLock, base::Talc};
 use x86_64::{VirtAddr, structures::paging::{FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB}};
 
-use crate::{arch::x86_64::paging::KERNEL_MAPPER, klog, memory::{PAGE_SIZE, pmm::KERNEL_FRAME_ALLOCATOR}};
+use crate::{arch::x86_64::paging::KERNEL_MAPPER, errno::KernelErrors, kerror, klog, memory::{PAGE_SIZE, pmm::KERNEL_FRAME_ALLOCATOR}};
 
 const KERNEL_HEAP_START: VirtAddr = VirtAddr::new(0xFFFF_9000_0000_0000);
 
@@ -55,7 +55,8 @@ unsafe impl talc::source::Source for KernelHeapSource {
 		for page in page_range {
 			let frame = frame_allocator
 				.allocate_frame()
-				.ok_or(()).expect("Failed allocating frame for kernel heap");
+				.ok_or_else(||{kerror!("failed to allocate memory for kernel heap"); return ();})?;
+
 			let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
 			unsafe {
 				mapper

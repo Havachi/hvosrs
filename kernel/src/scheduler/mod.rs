@@ -3,7 +3,7 @@ pub mod process;
 use core::{arch::naked_asm, sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64}};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr, registers::control::{Cr3, Cr3Flags}, structures::paging::PhysFrame};
-use crate::{arch::x86_64::{asm::current_cr3, gdt::set_tss_rsp0}, klog, ksprint, scheduler::process::{Process, ProcessId, ProcessState}};
+use crate::{arch::x86_64::{asm::current_cr3, gdt::set_tss_rsp0}, klog, scheduler::process::{Process, ProcessId, ProcessState}};
 
 
 const MAX_PROCESS: usize = 1024;

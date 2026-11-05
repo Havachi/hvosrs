@@ -1,10 +1,10 @@
 use core::str;
 
+
 use crate::{
-	drivers::{console, serial}, errno::KernelErrors, ksprint, scheduler::{alloc_fd, with_current_process}, syscalls::{
-		errno::EFAULT,
-		user_access::{copy_from_user_into, copy_to_user, copy_user_cstr},
-	}, vfs::{self, SeekOrigin},
+	arch::x86_64::syscall::{SyscallFrame, resume_syscall_frame}, drivers::{console, serial}, errno::KernelErrors::{self, EAGAIN}, klog, ksprint, scheduler::{CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, process::{self, fork_child_from}, with_current_process}, syscalls::{
+		errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr, leave_kernel_page_table},
+	}, vfs::{self, SeekOrigin, file::VfsFileOpenflags, mkdir},
 };
 
 pub const SYS_READ: usize = 0;
@@ -12,6 +12,9 @@ pub const SYS_WRITE: usize = 1;
 pub const SYS_OPEN: usize = 2;
 pub const SYS_CLOSE: usize = 3;
 pub const SYS_LSEEK: usize = 4;
+pub const SYS_FORK: usize = 57;
+pub const SYS_EXECVE: usize = 59;
+pub const SYS_MKDIR: usize = 83;
 
 const MAX_IO: usize = 4096;
 const MAX_PATH: usize = 4096;
@@ -161,4 +164,66 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> i64 {
 		Some(Err(e)) => neg(e),
 		None => neg(KernelErrors::EBADF),
 	}
+}
+
+pub fn sys_mkdir(path_ptr: u64) -> i64 {
+	let path_bytes = match copy_user_cstr(path_ptr, MAX_PATH) {
+		Ok(b) => b,
+		Err(e) => return e,
+	};
+	let path = match str::from_utf8(&path_bytes) {
+		Ok(s) => s,
+		Err(_) => return neg(KernelErrors::EINVAL),
+	};
+
+	match mkdir(path) {
+		Ok(_) => 0,
+		Err(err) => neg(err),
+	}
+}
+
+pub fn sys_fork(frame: &mut SyscallFrame) -> i64 {
+	x86_64::instructions::interrupts::without_interrupts(|| {
+
+		let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed);
+		let mut pt = PROCESS_TABLE.lock();
+		let current_process = pt[current_pid as usize].as_ref().ok_or_else(|| EAGAIN)?;
+		let child = fork_child_from(current_process, frame)?;
+		let child_pid = child.pid;
+		assert!(pt[child_pid as usize].is_none());
+		pt[current_pid as usize].as_mut().expect("should be some").rsp = frame.user_rsp;
+
+		drop(pt);
+		add_proc(child_pid, child);
+		Ok(child_pid as i64)
+	}).unwrap_or_else(|e| neg(e))
+}
+
+pub fn sys_execve(path_ptr: u64, _argv: u64, _envp: u64, frame: &mut SyscallFrame) -> i64 {
+	x86_64::instructions::interrupts::without_interrupts(|| {
+
+		let path_bytes = copy_user_cstr(path_ptr, MAX_PATH).map_err(|_| KernelErrors::EINVAL)?;
+		let path = str::from_utf8(&path_bytes).map_err(|_| KernelErrors::EINVAL)?;
+		klog!("execve: {}", path);
+		let mut file = vfs::open(path, VfsFileOpenflags::O_RDONLY.bits())?;
+		let elf_buf =  vfs::read_file_all(&mut file)?;
+		let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed) as usize;
+
+		ksprint!("A\n");
+		let mut pt = PROCESS_TABLE.lock();
+		klog!("alo");
+		let proc = pt[current_pid].as_mut().ok_or(KernelErrors::EINVAL)?;
+
+		frame.rip_saved = process::exec_replace_image(proc, &elf_buf)?;
+		let cr3 = proc.cr3;
+		let proc_rsp = proc.rsp;
+		drop(pt);
+
+		frame.user_rsp = proc_rsp;
+		frame.rax = 0;
+		leave_kernel_page_table(cr3);
+		klog!("[KERNEL] execve end");
+		unsafe { resume_syscall_frame(frame) }
+		Ok(-1)
+	}).unwrap_or_else(|e| neg(e))
 }
