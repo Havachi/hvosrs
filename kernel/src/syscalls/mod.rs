@@ -2,9 +2,15 @@ mod errno;
 mod handlers;
 mod user_access;
 
+use core::sync::atomic::Ordering;
+
 use crate::{
-	arch::x86_64::{asm::current_cr3, syscall::SyscallFrame}, klog, syscalls::{
-		handlers::*, user_access::{clear_user_cr3, enter_kernel_page_table, leave_kernel_page_table, set_user_cr3},
+	arch::x86_64::{asm::current_cr3, syscall::SyscallFrame},
+	klog,
+	scheduler::CURRENT_PID,
+	syscalls::{
+		handlers::*,
+		user_access::{clear_user_cr3, enter_kernel_page_table, leave_kernel_page_table, set_user_cr3},
 	},
 };
 
@@ -23,7 +29,9 @@ const fn make_table() -> [SyscallFn; NR_SYSCALLS] {
 	t[SYS_LSEEK] = |_, fd, offset, whence, _, _, _| sys_lseek(fd as i32, offset as i64, whence as i32);
 	t[SYS_FORK] = |_,_,_,_,_,_,f| sys_fork(f);
 	t[SYS_EXECVE] = |_,path,argv,envp,_,_,f| sys_execve(path, argv, envp, f);
+	t[SYS_EXIT] = |_,code,_,_,_,_,_| sys_exit(code);
 	t[SYS_MKDIR] = |_,path,_,_,_,_,_| sys_mkdir(path);
+	t[SYS_WAITID] = |_,idtype,id,infop,option,_,f| sys_waitid(idtype, id, infop, option, f);
 	t
 }
 
@@ -65,8 +73,15 @@ pub fn syscall_dispatcher(nr: u64, frame: &mut SyscallFrame) -> i64 {
 		frame
 	);
 
+	if nr == SYS_EXIT as u64 {
+		crate::kpanic!("sys_exit returned to syscall dispatcher");
+	}
 	if retval == -38 {
-		klog!("[SYSCALL] syscall not implemented: {nr}")
+		let pid = CURRENT_PID.load(Ordering::Acquire);
+		klog!(
+			"[SYSCALL] syscall not implemented: {nr} pid={pid} user_rip={:#x}",
+			frame.rip_saved
+		);
 	}
 
 	retval

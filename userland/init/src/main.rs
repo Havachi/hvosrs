@@ -21,11 +21,44 @@ pub extern "C" fn _start() -> ! {
 	if f == 0 {
 		let path = b"/bin/shell\0";
 		let r = execve(path, core::ptr::null(), core::ptr::null());
-		print("execve failed\n");
+		if r < 0 {
+			print("execve failed\n");
+		}
 	}
 
 	if f > 0 {
-		print("parent process here\n");
+		print("[INIT] parent process here\n");
+		let w = waitid(0, 0, 0, 0);
+		print("[INIT] waitid returned ");
+		// minimal decimal print via write of one digit for smoke test
+		let mut buf = [0u8; 24];
+		let n = w.unsigned_abs();
+		let mut i = 0usize;
+		if w < 0 {
+			buf[i] = b'-';
+			i += 1;
+		}
+		let mut digits = [0u8; 20];
+		let mut nd = 0usize;
+		let mut v = if w < 0 { n } else { w as u64 };
+		if v == 0 {
+			digits[0] = b'0';
+			nd = 1;
+		} else {
+			while v > 0 && nd < digits.len() {
+				digits[nd] = b'0' + (v % 10) as u8;
+				nd += 1;
+				v /= 10;
+			}
+		}
+		while nd > 0 {
+			nd -= 1;
+			buf[i] = digits[nd];
+			i += 1;
+		}
+		buf[i] = b'\n';
+		write(1, &buf[..=i]);
+		print("[INIT] shell has exited\n");
 	}
 
 	loop {

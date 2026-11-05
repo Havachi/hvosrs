@@ -26,6 +26,9 @@ pub struct SyscallFrame {
     pub user_rsp: u64,
 }
 
+const _: () = assert!(core::mem::size_of::<SyscallFrame>() == 144);
+const _: () = assert!(core::mem::offset_of!(SyscallFrame, rax) == 112);
+
 
 pub fn init(){
 	Star::write(USER_CODE, USER_DATA, KERNEL_CODE, KERNEL_DATA).map_err(|e| {
@@ -68,14 +71,20 @@ global_asm!(
 .global syscall_entry
 syscall_entry:
 	mov r8, rsp
-	lea r10, [rip + SYSCALL_STACK]
-	add r10, {stack_size}
-	mov rsp, r10
+	mov rbx, rax
+	mov rax, qword ptr [rip + {kstack_top}]
+	test rax, rax
+	jnz 1f
+	lea rax, [rip + SYSCALL_STACK]
+	add rax, {stack_size}
+1:
+	mov rsp, rax
+	and rsp, -16
 
-	// Push order (first = highest address): user_rsp, rip, rflags, nr, rbx, rcx, rdx, rsi, rdi, rbp, pad, r9, r10, r11, r12..r15
 	push r8
 	push rcx
 	push r11
+	mov rax, rbx
 	push rax
 	push rbx
 	push rcx
@@ -92,22 +101,18 @@ syscall_entry:
 	push r14
 	push r15
 
-	mov rbx, rax
 	mov r12, rsp
-	call hvos_syscall_kstack_top
-	mov rsp, rax
-	and rsp, -16
+	sub rsp, 512
 	mov rdi, rbx
 	mov rsi, r12
 	call syscall_dispatch_rs
+	add rsp, 512
 	mov rsp, r12
 
-	// Store syscall return value into saved rax slot (rsp+112 at this point)
 	mov [rsp + 112], rax
 
 .global syscall_exit
 syscall_exit:
-	// Pop order reverses push: r15..r12, r11, r10, r9, pad, rbp, rdi, rsi, rdx, rcx, rbx, rax, rflags, rip, user_rsp
 	pop r15
 	pop r14
 	pop r13
@@ -135,5 +140,6 @@ resume_syscall_frame:
 	mov rsp, rdi
 	jmp syscall_exit
 	"#,
+	kstack_top = sym crate::scheduler::CURRENT_KSTACK_TOP,
 	stack_size = const SYSCALL_STACK_SIZE,
 );

@@ -2,7 +2,7 @@ use core::str;
 
 
 use crate::{
-	arch::x86_64::syscall::{SyscallFrame, resume_syscall_frame}, drivers::{console, serial}, errno::KernelErrors::{self, EAGAIN}, klog, ksprint, scheduler::{CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, process::{self, fork_child_from}, with_current_process}, syscalls::{
+	arch::x86_64::syscall::{SyscallFrame, resume_syscall_frame}, drivers::{console, serial}, errno::KernelErrors::{self, EAGAIN}, klog, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, process::{self, find_zombie, fork_child_from, has_waitable_child, reap}, schedule, with_current_process}, syscalls::{
 		errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr, leave_kernel_page_table},
 	}, vfs::{self, SeekOrigin, file::VfsFileOpenflags, mkdir},
 };
@@ -14,7 +14,9 @@ pub const SYS_CLOSE: usize = 3;
 pub const SYS_LSEEK: usize = 4;
 pub const SYS_FORK: usize = 57;
 pub const SYS_EXECVE: usize = 59;
+pub const SYS_EXIT: usize = 60;
 pub const SYS_MKDIR: usize = 83;
+pub const SYS_WAITID: usize = 247;
 
 const MAX_IO: usize = 4096;
 const MAX_PATH: usize = 4096;
@@ -209,9 +211,7 @@ pub fn sys_execve(path_ptr: u64, _argv: u64, _envp: u64, frame: &mut SyscallFram
 		let elf_buf =  vfs::read_file_all(&mut file)?;
 		let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed) as usize;
 
-		ksprint!("A\n");
 		let mut pt = PROCESS_TABLE.lock();
-		klog!("alo");
 		let proc = pt[current_pid].as_mut().ok_or(KernelErrors::EINVAL)?;
 
 		frame.rip_saved = process::exec_replace_image(proc, &elf_buf)?;
@@ -226,4 +226,55 @@ pub fn sys_execve(path_ptr: u64, _argv: u64, _envp: u64, frame: &mut SyscallFram
 		unsafe { resume_syscall_frame(frame) }
 		Ok(-1)
 	}).unwrap_or_else(|e| neg(e))
+}
+
+
+pub fn sys_exit(code: u64) -> ! {
+	x86_64::instructions::interrupts::without_interrupts(|| {
+
+		let mut pt = PROCESS_TABLE.lock();
+		let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Acquire);
+		let proc = pt[current_pid as usize].as_mut().unwrap();
+
+		klog!("sys_exit: pid={current_pid} code={code}");
+		proc.state = process::ProcessState::Dead;
+		proc.exit_code = ((code & 0xFF) << 8) as u32;
+
+		let ppid = proc.ppid;
+		drop(pt);
+		scheduler::wake_parent(ppid);
+		schedule();
+		crate::kpanic!("schedule returned after sys_exit (pid={current_pid})");
+	});
+	unreachable!()
+}
+
+pub fn sys_waitid(id_type: u64, id: u64, _infop: u64, _options: u64, frame: &SyscallFrame) -> i64 {
+	let parent_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Acquire);
+
+	loop {
+		let cpid = if id_type == 0 { 0 } else if id_type == 1 { id } else { return neg(KernelErrors::EINVAL); };
+
+		if let Some((pid, status)) = find_zombie(parent_pid, cpid) {
+			reap(pid);
+			klog!(
+				"waitid: parent={parent_pid} reaped={pid} status={status:#x} user_rip={:#x}",
+				frame.rip_saved
+			);
+			return pid as i64;
+		}
+		if !has_waitable_child(parent_pid) { return neg(KernelErrors::ECHILD); }
+		klog!(
+			"waitid: parent={parent_pid} block user_rip={:#x}",
+			frame.rip_saved
+		);
+		x86_64::instructions::interrupts::without_interrupts(|| {
+			let mut pt = PROCESS_TABLE.lock();
+			if let Some(pproc) = pt[parent_pid as usize].as_mut() {
+				pproc.state = process::ProcessState::Blocked;
+			}
+			drop(pt);
+		});
+		schedule();
+	}
 }

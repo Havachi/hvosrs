@@ -131,7 +131,10 @@ impl Scheduler {
 			let mut pt = PROCESS_TABLE.lock();
 			if let Some(current_proc) = pt[current_pid as usize].as_mut(){
 				current_proc.ticks = CURRENT_TICKS.load(Ordering::Relaxed);
-				if current_proc.state != ProcessState::Sleeping {
+				if	current_proc.state != ProcessState::Sleeping &&
+					current_proc.state != ProcessState::Blocked &&
+					current_proc.state != ProcessState::Dead
+				{
 
 					if current_proc.ticks >= current_proc.priority.get_q() {
 						current_proc.ticks = 0;
@@ -153,24 +156,37 @@ impl Scheduler {
 		CURRENT_PID.store(0xFFFF, Ordering::Release);
 
 		for q in self.run_queues.iter_mut() {
-			if let Some(pid) = q.pop(){
+			while let Some(pid) = q.pop() {
+				let mut pt = PROCESS_TABLE.lock();
+				let Some(next_proc) = pt[pid as usize].as_mut() else {
+					drop(pt);
+					continue;
+				};
+				if next_proc.state == ProcessState::Dead {
+					drop(pt);
+					continue;
+				}
+				let next_proc = next_proc.clone();
+				drop(pt);
 				CURRENT_PID.store(pid, Ordering::Release);
 				let mut pt = PROCESS_TABLE.lock();
-				if let Some(next_proc) = pt[pid as usize].as_mut().cloned() {
-					let new_rsp = if pid == preempted_pid && preempted_pid < 1024 {
-						Self::RSP_RESUME_SAVED
-					} else {
-						next_proc.krsp
-					};
-					let new_cr3 = next_proc.cr3;
-					CURRENT_TICKS.store(next_proc.ticks, Ordering::Relaxed);
-					CURRENT_PRIO.store( next_proc.priority as u8, Ordering::Relaxed);
-					set_tss_rsp0(VirtAddr::new(next_proc.kstack_top));
-					CURRENT_KSTACK_TOP.store(next_proc.kstack_top, core::sync::atomic::Ordering::Release);
-					drop(pt);
-					return (old_rsp_ptr, new_rsp, new_cr3);
-				}
+				let resume_saved = pid == preempted_pid
+					&& preempted_pid < 1024
+					&& pt[preempted_pid as usize]
+						.as_ref()
+						.is_some_and(|p| p.state != ProcessState::Dead);
 				drop(pt);
+				let new_rsp = if resume_saved {
+					Self::RSP_RESUME_SAVED
+				} else {
+					next_proc.krsp
+				};
+				let new_cr3 = next_proc.cr3;
+				CURRENT_TICKS.store(next_proc.ticks, Ordering::Relaxed);
+				CURRENT_PRIO.store(next_proc.priority as u8, Ordering::Relaxed);
+				set_tss_rsp0(VirtAddr::new(next_proc.kstack_top));
+				CURRENT_KSTACK_TOP.store(next_proc.kstack_top, core::sync::atomic::Ordering::Release);
+				return (old_rsp_ptr, new_rsp, new_cr3);
 			}
 		}
 		//switch to idle task here
@@ -299,6 +315,23 @@ pub fn wake_process() {
 
 	drop(sched);
 
+}
+
+pub fn wake_parent(ppid: ProcessId) {
+	let mut pt = PROCESS_TABLE.lock();
+	let mut proc = match pt[ppid as usize].as_mut() {
+		Some(p) => p,
+		None => return,
+	};
+	if proc.state == ProcessState::Blocked {
+		proc.state = ProcessState::Ready;
+	}
+	let mut sched = SCHEDULER.lock();
+	let proc_prio = proc.priority;
+	let proc_pid = proc.pid;
+	drop(pt);
+	sched.run_queues[proc_prio as usize].push(proc_pid);
+	drop(sched);
 }
 
 pub fn reschedule() {

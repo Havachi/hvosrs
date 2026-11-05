@@ -23,6 +23,8 @@ pub enum KernelErrors {
 	ENOENT = 2,
 	///Bad file descriptor
 	EBADF = 9,
+	//No child processes
+	ECHILD = 10,
 	///Resource temporarily unavailable
 	EAGAIN = 11,
 	///Cannot allocate memory

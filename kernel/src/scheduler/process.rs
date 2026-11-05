@@ -1,9 +1,9 @@
 
 use core::sync::atomic::AtomicU32;
 
-use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
+use x86_64::{PhysAddr, VirtAddr, structures::paging::{FrameDeallocator, Page, PageTableFlags, PhysFrame, Size4KiB}};
 
-use crate::{arch::x86_64::{asm::current_cr3, gdt::set_tss_rsp0, paging::{duplicate_user_address_space, map_phys_page, new_page_table, switch_pml4}, syscall::{SyscallFrame, fork_child_return}}, elf::load_elf, errno::KernelErrors, ksprint, memory::{PAGE_SIZE, USER_RANGE_END, allocate_n_pages, pmm::PhysAllocator}, scheduler::{CURRENT_KSTACK_TOP, MAX_PROCESS, Priority, exit_to_user}, vfs::file::VfsFile};
+use crate::{arch::x86_64::{asm::current_cr3, gdt::set_tss_rsp0, paging::{duplicate_user_address_space, map_phys_page, new_page_table, switch_pml4}, syscall::{SyscallFrame, fork_child_return}}, elf::load_elf, errno::KernelErrors, ksprint, memory::{PAGE_SIZE, USER_RANGE_END, allocate_n_pages, pmm::PhysAllocator}, scheduler::{CURRENT_KSTACK_TOP, MAX_PROCESS, PROCESS_TABLE, Priority, exit_to_user, process}, vfs::file::VfsFile};
 
 pub type ProcessId = u32;
 pub static NEXT_PID: AtomicU32 = AtomicU32::new(10);
@@ -61,6 +61,7 @@ pub struct Process {
 	pub priority: Priority,
 	pub fd_table: [Option<VfsFile>; MAX_FD_PER_PROCESS],
 	pub fork_resume_frame: Option<SyscallFrame>,
+	pub exit_code: u32,
 }
 
 
@@ -144,6 +145,7 @@ impl Process {
 			ctx: CpuContext::new(),
 			fd_table,
 			fork_resume_frame: None,
+			exit_code: 0,
 		}
 	}
 
@@ -157,7 +159,6 @@ impl Process {
 		self.wake_tick = 0;
 		self.state = ProcessState::Ready;
 	}
-
 }
 
 pub fn fork_child_from(parent: &Process, frame: &SyscallFrame) -> Result<Process, KernelErrors> {
@@ -200,6 +201,7 @@ pub fn fork_child_from(parent: &Process, frame: &SyscallFrame) -> Result<Process
 			kstack_top: kernel_stack_top,
 			ticks: 0, wake_tick: 0, next_pid: None, priority: Priority::Critial,
 			fork_resume_frame: Some(*frame),
+			exit_code: 0,
 		}
 	)
 
@@ -311,4 +313,50 @@ fn kernel_stack_bootstrap(user_rsp: u64, entry_point: u64, return_fn: u64) -> (u
 		}
 	}
 	(ksp as u64, kernel_stack_top)
+}
+
+pub fn find_zombie(parent_pid: ProcessId, id: u64) -> Option<(ProcessId, u32)> {
+	let mut pt = PROCESS_TABLE.lock();
+
+	for p in pt.iter_mut() {
+		if let Some(proc) = p {
+			let proc_pid = proc.pid;
+			let proc_exit_code = proc.exit_code;
+			if proc.state == ProcessState::Dead && proc.ppid == parent_pid {
+				if id == 0 {
+					drop(pt);
+					return Some((proc_pid, proc_exit_code));
+				} else {
+					if proc.pid == id as ProcessId {
+						drop(pt);
+						return Some((proc_pid, proc_exit_code));
+					}
+				}
+			}
+		}
+	}
+	drop(pt);
+	None
+}
+
+pub fn has_waitable_child(parent_pid: ProcessId) -> bool {
+	let mut pt = PROCESS_TABLE.lock();
+	for p in pt.iter_mut() {
+		if let Some(proc) = p {
+			if proc.ppid == parent_pid {
+				drop(pt);
+				return true;
+			}
+		}
+	}
+	drop(pt);
+	false
+}
+
+pub fn reap(pid: ProcessId) {
+	let mut pt = PROCESS_TABLE.lock();
+	if let Some(proc) = pt[pid as usize].take() {
+		//deallocate stuff here
+	}
+	drop(pt);
 }

@@ -10,7 +10,9 @@ const SYS_CLOSE: u64 = 3;
 const SYS_LSEEK: u64 = 4;
 const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
+const SYS_EXIT: u64 = 60;
 const SYS_MKDIR: u64 = 83;
+const SYS_WAITID: u64 = 247;
 pub const SEEK_SET: i32 = 0;
 
 pub fn write_str(fd: i64, s: &str) {
@@ -52,6 +54,15 @@ pub fn fork() -> i64 {
 pub fn execve(path: &[u8], argv: *const u8, envp: *const u8) -> i64 {
 	unsafe { syscall3(SYS_EXECVE, path.as_ptr() as u64, argv as u64, envp as u64) }
 }
+
+pub fn exit(code:u32) {
+	unsafe { syscall1(SYS_EXIT, code as u64) };
+}
+
+pub fn waitid(idtype: u64, id:u64, infop: u64, option: u64) -> i64 {
+	unsafe {syscall4(SYS_WAITID,idtype, id, infop, option)}
+}
+
 
 unsafe fn syscall0(nr: u64) -> i64 {
 	let ret: i64;
