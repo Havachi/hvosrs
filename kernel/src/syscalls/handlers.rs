@@ -2,8 +2,8 @@ use core::str;
 
 
 use crate::{
-	arch::x86_64::syscall::{SyscallFrame, resume_syscall_frame}, drivers::{console, serial}, errno::KernelErrors::{self, EAGAIN}, klog, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, process::{self, find_zombie, fork_child_from, has_waitable_child, reap}, schedule, with_current_process}, syscalls::{
-		errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr, leave_kernel_page_table},
+	arch::x86_64::syscall::SyscallFrame, drivers::{console, io::getchar, serial}, errno::KernelErrors::{self, EAGAIN}, klog, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, block_current, process::{self, find_zombie, fork_child_from, has_waitable_child, reap}, schedule, with_current_process}, syscalls::{
+		errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr},
 	}, vfs::{self, SeekOrigin, file::VfsFileOpenflags, mkdir},
 };
 
@@ -12,6 +12,7 @@ pub const SYS_WRITE: usize = 1;
 pub const SYS_OPEN: usize = 2;
 pub const SYS_CLOSE: usize = 3;
 pub const SYS_LSEEK: usize = 4;
+pub const SYS_GETPID: usize = 39;
 pub const SYS_FORK: usize = 57;
 pub const SYS_EXECVE: usize = 59;
 pub const SYS_EXIT: usize = 60;
@@ -32,25 +33,65 @@ pub fn sys_read(fd: i32, user_buf: u64, count: usize) -> i64 {
 	if count > MAX_IO {
 		return neg(KernelErrors::EINVAL);
 	}
-
 	let mut kbuf = alloc::vec![0u8; count];
-	let n = match with_current_process(|proc| {
+
+	let mut pt = PROCESS_TABLE.lock();
+	let pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed);
+
+	if let Some(proc) = pt[pid as usize].as_mut() {
 		let fd = fd as usize;
 		if fd >= proc.fd_table.len() {
-			return Err(KernelErrors::EBADF);
+			drop(pt);
+			return neg(KernelErrors::EBADF);
 		}
-		let file = proc.fd_table[fd].as_mut().ok_or(KernelErrors::EBADF)?;
-		vfs::read(file, &mut kbuf)
-	}) {
-		Some(Ok(n)) => n,
-		Some(Err(e)) => return neg(e),
-		None => return neg(KernelErrors::EBADF),
-	};
 
-	if n > 0 && copy_to_user(user_buf, &kbuf[..n]).is_err() {
-		return EFAULT;
+		let n = match fd {
+			0 => {
+				//dont need fd_table for stdin
+				drop(pt);
+				let mut i = 0;
+				while i < count {
+					match getchar() {
+						Ok(c) => {
+							kbuf[i] = c;
+							i+=1;
+						}
+						Err(k) => {
+							if k == KernelErrors::EAGAIN {
+								block_current(process::BlockedBy::Stdin);
+							} else {
+								return neg(k);
+							}
+						}
+					}
+				}
+				i
+			},
+			_ => {
+				let file = match proc.fd_table[fd].as_mut().ok_or(KernelErrors::EBADF) {
+					Ok(f) => f,
+					Err(er) => {
+						drop(pt);
+						return neg(er);
+					},
+				};
+				match vfs::read(file, &mut kbuf) {
+					Ok(n) => n,
+					Err(er) => {
+						drop(pt);
+						return neg(er);
+					},
+				}
+			}
+		};
+
+		if n > 0 && copy_to_user(user_buf, &kbuf[..n]).is_err() {
+			return neg(KernelErrors::EFAULT);
+		}
+		return n as i64
+	} else {
+		return neg(KernelErrors::EINVAL);
 	}
-	n as i64
 }
 
 pub fn sys_write(fd: i32, user_buf: u64, count: usize) -> i64 {
@@ -206,7 +247,6 @@ pub fn sys_execve(path_ptr: u64, _argv: u64, _envp: u64, frame: &mut SyscallFram
 
 		let path_bytes = copy_user_cstr(path_ptr, MAX_PATH).map_err(|_| KernelErrors::EINVAL)?;
 		let path = str::from_utf8(&path_bytes).map_err(|_| KernelErrors::EINVAL)?;
-		klog!("execve: {}", path);
 		let mut file = vfs::open(path, VfsFileOpenflags::O_RDONLY.bits())?;
 		let elf_buf =  vfs::read_file_all(&mut file)?;
 		let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed) as usize;
@@ -221,10 +261,8 @@ pub fn sys_execve(path_ptr: u64, _argv: u64, _envp: u64, frame: &mut SyscallFram
 
 		frame.user_rsp = proc_rsp;
 		frame.rax = 0;
-		leave_kernel_page_table(cr3);
-		klog!("[KERNEL] execve end");
-		unsafe { resume_syscall_frame(frame) }
-		Ok(-1)
+		// Return through syscall_dispatch_rs so CR3 for sysret matches proc.cr3 (see leave_cr3).
+		Ok(0)
 	}).unwrap_or_else(|e| neg(e))
 }
 
@@ -236,7 +274,6 @@ pub fn sys_exit(code: u64) -> ! {
 		let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Acquire);
 		let proc = pt[current_pid as usize].as_mut().unwrap();
 
-		klog!("sys_exit: pid={current_pid} code={code}");
 		proc.state = process::ProcessState::Dead;
 		proc.exit_code = ((code & 0xFF) << 8) as u32;
 
@@ -255,19 +292,11 @@ pub fn sys_waitid(id_type: u64, id: u64, _infop: u64, _options: u64, frame: &Sys
 	loop {
 		let cpid = if id_type == 0 { 0 } else if id_type == 1 { id } else { return neg(KernelErrors::EINVAL); };
 
-		if let Some((pid, status)) = find_zombie(parent_pid, cpid) {
+		if let Some((pid, _status)) = find_zombie(parent_pid, cpid) {
 			reap(pid);
-			klog!(
-				"waitid: parent={parent_pid} reaped={pid} status={status:#x} user_rip={:#x}",
-				frame.rip_saved
-			);
 			return pid as i64;
 		}
 		if !has_waitable_child(parent_pid) { return neg(KernelErrors::ECHILD); }
-		klog!(
-			"waitid: parent={parent_pid} block user_rip={:#x}",
-			frame.rip_saved
-		);
 		x86_64::instructions::interrupts::without_interrupts(|| {
 			let mut pt = PROCESS_TABLE.lock();
 			if let Some(pproc) = pt[parent_pid as usize].as_mut() {
@@ -277,4 +306,9 @@ pub fn sys_waitid(id_type: u64, id: u64, _infop: u64, _options: u64, frame: &Sys
 		});
 		schedule();
 	}
+}
+
+pub fn sys_getpid() -> i64 {
+	let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed);
+	return current_pid as i64;
 }

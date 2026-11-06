@@ -3,9 +3,10 @@ pub mod key;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
-use crate::{drivers::keyboard::key::{KeyCode, map_scancode}, klog, kprint};
+use crate::{drivers::{io::STDIN_BUFFER, keyboard::key::{KeyCode, map_scancode}}, errno::KernelErrors, klog, scheduler::unblock_stdin};
 
 pub static KEYBOARD: Mutex<KeyboardState> = Mutex::new(KeyboardState::new());
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyState{
@@ -28,7 +29,7 @@ pub fn init() {
 	klog!("PS/2 Keyboard driver init done");
 }
 
-pub fn handle_scancode(scancode: u8) {
+pub fn handle_scancode(scancode: u8) -> Result<(), KernelErrors> {
 	let mut kbd = KEYBOARD.lock();
 
 	if let Some(keyevent) = kbd.process_scancode(scancode) {
@@ -50,11 +51,14 @@ pub fn handle_scancode(scancode: u8) {
 				KeyCode::LAlt							=> kbd.alt_pressed = true,
 				_ => {
 					let c = kbd.to_ascii(keyevent.key);
-					kprint!("{c}");
+					let mut stdin_buffer = STDIN_BUFFER.lock();
+					stdin_buffer.push(c as u8)?;
+					unblock_stdin();
 				}
 			}
 		}
 	}
+	Ok(())
 }
 
 

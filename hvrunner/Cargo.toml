@@ -18,9 +18,9 @@ wait-timeout = "0.2.1"
 [package.metadata.hvrunner]
 image_path = "target/kernel.iso" 
 run-args = [
-	#"-d","int",
+	"-d","int",
 	"-smp", "4",
 	"-drive", "file=nvme.qcow2,if=none,id=nvm",
-	"-device", "nvme,drive=nvm,serial=B16B00B5",
-	"--trace", "pci_nvme*"
+	"-device", "nvme,drive=nvm,serial=B16B00B5"
+	#"--trace", "pci_nvme*"
 ]

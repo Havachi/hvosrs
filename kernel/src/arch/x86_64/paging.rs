@@ -2,7 +2,7 @@ use core::sync::atomic::AtomicU64;
 
 use lazyinit::LazyInit;
 use spin::Mutex;
-use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::{FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, mapper::MapToError}};
+use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::{FrameAllocator, FrameDeallocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, mapper::MapToError}};
 
 use crate::{errno::KernelErrors, memory::{HHDM_OFFSET, PAGE_SIZE, mmio::map_mmio_region, pmm::{self, PhysAllocator}, vmm::phys_to_virt}};
 
@@ -46,6 +46,61 @@ pub fn new_page_table(frame_allocator: &mut impl FrameAllocator<Size4KiB>) -> (O
 	(mapper, new_pml4_frame)
 }
 
+pub fn free_page_table(
+	cr3: u64,
+	frame_allocator: &mut (impl FrameAllocator<Size4KiB> + FrameDeallocator<Size4KiB>),
+) {
+	let pml4_phys = PhysFrame::containing_address(PhysAddr::new(cr3));
+	let pml4_virt = phys_to_virt(pml4_phys.start_address());
+	let pml4: &PageTable = unsafe { &*pml4_virt.as_ptr() };
+	for pml4_idx in 0..256 {
+		let pte = &pml4[pml4_idx];
+		if pte.is_unused() || pte.flags().contains(PageTableFlags::HUGE_PAGE) {
+			continue;
+		}
+		let Ok(pdpt_frame) = pte.frame() else {
+			continue;
+		};
+		let pdpt_virt = phys_to_virt(pdpt_frame.start_address());
+		let pdpt: &PageTable = unsafe { &*pdpt_virt.as_ptr() };
+		free_user_subtree(pdpt, 3, frame_allocator);
+		unsafe {
+			frame_allocator.deallocate_frame(pdpt_frame);
+		}
+	}
+	unsafe {
+		frame_allocator.deallocate_frame(pml4_phys);
+	}
+}
+fn free_user_subtree(
+	table: &PageTable,
+	level: u32,
+	frame_allocator: &mut (impl FrameAllocator<Size4KiB> + FrameDeallocator<Size4KiB>),
+) {
+	for i in 0..512 {
+		let pte = &table[i];
+		if pte.is_unused() || pte.flags().contains(PageTableFlags::HUGE_PAGE) {
+			continue;
+		}
+		if level > 1 {
+			let Ok(sub_frame) = pte.frame() else {
+				continue;
+			};
+			let sub_virt = phys_to_virt(sub_frame.start_address());
+			let sub: &PageTable = unsafe { &*sub_virt.as_ptr() };
+			free_user_subtree(sub, level - 1, frame_allocator);
+			unsafe {
+				frame_allocator.deallocate_frame(sub_frame);
+			}
+		} else if pte.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
+			if let Ok(leaf) = pte.frame() {
+				unsafe {
+					frame_allocator.deallocate_frame(leaf);
+				}
+			}
+		}
+	}
+}
 
 pub unsafe fn get_active_pml4() -> &'static mut PageTable {
 	let (pml4_phys, _) = Cr3::read();

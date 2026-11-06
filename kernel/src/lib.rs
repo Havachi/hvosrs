@@ -14,10 +14,10 @@ pub mod interrupts;
 pub mod scheduler;
 pub mod elf;
 pub mod syscalls;
-//pub mod vfs;
 pub mod errno;
 pub mod fs;
 pub mod vfs;
+pub mod structures;
 
 pub mod limine_requests {
 	use limine::{BaseRevision, RequestsEndMarker, RequestsStartMarker, request::*};

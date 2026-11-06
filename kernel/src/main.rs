@@ -3,7 +3,7 @@
 use kernel::limine_requests::MODULES;
 use kernel::scheduler::process;
 use kernel::vfs::file::VfsFileOpenflags;
-use kernel::{drivers, interrupts, kerror, klog, ksprint, scheduler, vfs};
+use kernel::{drivers, interrupts, kerror, klog, scheduler, vfs};
 use kernel::{kprint, memory};
 use kernel::arch::x86_64::{
     cpu, gdt, idt, syscall
@@ -20,7 +20,6 @@ fn init() {
     scheduler::init();
 
     vfs::init();
-
     x86_64::instructions::interrupts::enable();
     syscall::init();
 

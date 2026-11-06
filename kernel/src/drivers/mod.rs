@@ -8,6 +8,7 @@ pub mod acpi;
 pub mod keyboard;
 pub mod block;
 pub mod pci;
+pub mod io;
 
 
 pub fn init() {

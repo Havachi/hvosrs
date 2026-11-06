@@ -2,7 +2,7 @@ use core::sync::atomic::Ordering::Relaxed;
 
 use x86_64::instructions::port::Port;
 
-use crate::{arch::x86_64::idt::{KEYBOARD_INT_VECTOR, TIMER_INT_VECTOR}, drivers::acpi::{INTERRUPT_OVERRIDE, IOAPIC, ISO_COUNT}};
+use crate::{arch::x86_64::idt::{KEYBOARD_INT_VECTOR, TIMER_INT_VECTOR}, drivers::acpi::{INTERRUPT_OVERRIDE, IOAPIC, ISO_COUNT}, kerror};
 
 pub fn init() {
 	if let Some(ioapic) = IOAPIC.lock().as_mut() {
@@ -30,5 +30,7 @@ pub fn timer_interrupt_handler() {
 
 pub fn keyboard_interrupt_handler() {
 	let scancode = unsafe { Port::<u8>::new(0x60).read() };
-	crate::drivers::keyboard::handle_scancode(scancode);
+	if let Err(e) = crate::drivers::keyboard::handle_scancode(scancode) {
+		kerror!("error handle keyboard: {:?}", e)
+	}
 }

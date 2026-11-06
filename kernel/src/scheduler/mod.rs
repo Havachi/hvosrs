@@ -3,7 +3,7 @@ pub mod process;
 use core::{arch::naked_asm, sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64}};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr, registers::control::{Cr3, Cr3Flags}, structures::paging::PhysFrame};
-use crate::{arch::x86_64::{asm::current_cr3, gdt::set_tss_rsp0}, klog, scheduler::process::{Process, ProcessId, ProcessState}};
+use crate::{arch::x86_64::{asm::current_cr3, gdt::set_tss_rsp0}, klog, scheduler::process::{BlockedBy, Process, ProcessId, ProcessState}};
 
 
 const MAX_PROCESS: usize = 1024;
@@ -38,7 +38,7 @@ pub static NEED_REFRESH: AtomicBool = AtomicBool::new(false);
 
 
 pub fn init() {
-	let idle_proc = Process::new(0, 0, idle_process as *const () as usize, current_cr3());
+	let idle_proc = Process::new_kernel(0, 0, idle_process as *const () as usize, current_cr3());
 	{
 		let mut pt = PROCESS_TABLE.lock();
 		pt[0] = Some(idle_proc);
@@ -106,6 +106,7 @@ impl TryFrom<u8> for Priority {
 pub struct Scheduler {
 	pub run_queues: [Queue; 4],
 	pub sleeping_queue: Queue,
+	pub blocked_queue: Queue,
 }
 
 impl Scheduler {
@@ -113,6 +114,7 @@ impl Scheduler {
 		Self {
 			run_queues: [Queue::new(); 4],
 			sleeping_queue: Queue::new(),
+			blocked_queue: Queue::new(),
 		}
 	}
 
@@ -131,7 +133,8 @@ impl Scheduler {
 			let mut pt = PROCESS_TABLE.lock();
 			if let Some(current_proc) = pt[current_pid as usize].as_mut(){
 				current_proc.ticks = CURRENT_TICKS.load(Ordering::Relaxed);
-				if	current_proc.state != ProcessState::Sleeping &&
+				if	current_proc.pid != 0 &&
+					current_proc.state != ProcessState::Sleeping &&
 					current_proc.state != ProcessState::Blocked &&
 					current_proc.state != ProcessState::Dead
 				{
@@ -169,7 +172,7 @@ impl Scheduler {
 				let next_proc = next_proc.clone();
 				drop(pt);
 				CURRENT_PID.store(pid, Ordering::Release);
-				let mut pt = PROCESS_TABLE.lock();
+				let pt = PROCESS_TABLE.lock();
 				let resume_saved = pid == preempted_pid
 					&& preempted_pid < 1024
 					&& pt[preempted_pid as usize]
@@ -316,10 +319,63 @@ pub fn wake_process() {
 	drop(sched);
 
 }
+pub fn unblock_stdin() {
+	let mut sched = SCHEDULER.lock();
+	let mut prev_pid: Option<ProcessId> = None;
+	let mut current_node = sched.blocked_queue.head;
+	let mut pids_to_wake = [0; 32];
+	let mut wake_count = 0;
+	let mut wake_priorities = [Priority::Critial; 32];
+	let mut pt = PROCESS_TABLE.lock();
+
+	while let Some(pid) = current_node {
+		let mut should_wake = false;
+		let mut prio = Priority::Critial;
+		if let Some(proc) = pt[pid as usize].as_mut() {
+			if proc.blocked_by == Some(BlockedBy::Stdin) && proc.state == ProcessState::Blocked {
+				should_wake = true;
+				prio = proc.priority;
+				proc.unblock();
+			}
+			current_node = proc.next_pid;
+		}
+		if should_wake {
+			if wake_count < 32 {
+				pids_to_wake[wake_count] = pid;
+				wake_priorities[wake_count] = prio;
+				wake_count += 1;
+			}
+
+			if let Some(prev) = prev_pid {
+				if let Some(prev_proc) = pt[prev as usize].as_mut() {
+					prev_proc.next_pid = current_node;
+				}
+			} else {
+				sched.blocked_queue.head = current_node;
+			}
+
+			if sched.blocked_queue.tail == Some(pid) {
+				sched.blocked_queue.tail = prev_pid;
+			}
+		} else {
+			prev_pid = Some(pid);
+		}
+	}
+	drop(pt);
+
+	for i in 0..wake_count {
+		let pid = pids_to_wake[i];
+		let prio = wake_priorities[i];
+		sched.run_queues[prio as usize].push(pid);
+	}
+
+	drop(sched);
+	NEED_RESCHED.store(true, core::sync::atomic::Ordering::Relaxed);
+}
 
 pub fn wake_parent(ppid: ProcessId) {
 	let mut pt = PROCESS_TABLE.lock();
-	let mut proc = match pt[ppid as usize].as_mut() {
+	let proc = match pt[ppid as usize].as_mut() {
 		Some(p) => p,
 		None => return,
 	};
@@ -408,6 +464,20 @@ pub fn sleep_current(ticks: u32) {
 
 	let mut sched = SCHEDULER.lock();
 	sched.sleeping_queue.push(current_active_pid);
+	drop(sched);
+	schedule();
+}
+
+pub fn block_current(reason: BlockedBy) {
+	let mut pt = PROCESS_TABLE.lock();
+    let current_active_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Acquire);
+	if let Some(proc) = pt[current_active_pid as usize].as_mut() {
+		proc.block(reason);
+	}
+	drop(pt);
+
+	let mut sched = SCHEDULER.lock();
+	sched.blocked_queue.push(current_active_pid);
 	drop(sched);
 	schedule();
 }

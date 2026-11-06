@@ -58,3 +58,20 @@ pub fn _kpanic(args: fmt::Arguments) -> ! {
 	});
 	loop { unsafe {core::arch::asm!("hlt")} };
 }
+
+fn write_u64(w: &mut KernelLogger, v: u64) -> fmt::Result {
+	use fmt::Write;
+	if v == 0 {
+		return w.write_str("0");
+	}
+	let mut buf = [0u8; 20];
+	let mut i = buf.len();
+	let mut n = v;
+	while n > 0 {
+		i -= 1;
+		buf[i] = b'0' + (n % 10) as u8;
+		n /= 10;
+	}
+	w.write_str(core::str::from_utf8(&buf[i..]).unwrap_or("0"))
+}
+// #endregion

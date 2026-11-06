@@ -8,6 +8,7 @@ const SYS_WRITE: u64 = 1;
 const SYS_OPEN: u64 = 2;
 const SYS_CLOSE: u64 = 3;
 const SYS_LSEEK: u64 = 4;
+const SYS_GETPID: u64 = 39;
 const SYS_FORK: u64 = 57;
 const SYS_EXECVE: u64 = 59;
 const SYS_EXIT: u64 = 60;
@@ -63,6 +64,9 @@ pub fn waitid(idtype: u64, id:u64, infop: u64, option: u64) -> i64 {
 	unsafe {syscall4(SYS_WAITID,idtype, id, infop, option)}
 }
 
+pub fn getpid() -> u32 {
+	unsafe { syscall0(SYS_GETPID) as u32 } 
+}
 
 unsafe fn syscall0(nr: u64) -> i64 {
 	let ret: i64;
@@ -176,6 +180,11 @@ unsafe fn syscall6(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64
 	ret
 }
 
+pub fn getchar() -> u8 {
+	let mut b = [0u8];
+	let res = read(0, &mut b);
+	b[0]
+}
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {

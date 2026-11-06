@@ -20,6 +20,8 @@ unsafe impl FrameAllocator<Size4KiB> for PhysAllocator {
 	fn allocate_frame(&mut self) -> Option<frame::PhysFrame<Size4KiB>> {
 		let frame_idx = bitmap_next_free()?;
 		bitmap_set(frame_idx);
+		let mut ff = FREE_FRAMES.lock();
+		*ff = *ff - 1;
 		return Some(PhysFrame::containing_address(PhysAddr::new_truncate(frame_idx << 12)));
 	}
 }
@@ -28,6 +30,8 @@ impl FrameDeallocator<Size4KiB> for PhysAllocator {
 	unsafe fn deallocate_frame(&mut self, frame: PhysFrame<Size4KiB>) {
 		let frame_idx = frame.start_address().as_u64() / PAGE_SIZE as u64;
 		bitmap_free(frame_idx);
+		let mut ff = FREE_FRAMES.lock();
+		*ff = *ff + 1;
 	}
 }
 
@@ -35,18 +39,25 @@ impl PhysAllocator {
 	pub fn allocate_n_frame(n: usize) -> Option<PhysAddr>{
 		let frame_idx = bitmap_next_free_range(n)?;
 		bitmap_set_n(frame_idx, n);
+		let mut ff = FREE_FRAMES.lock();
+		*ff = *ff - 1;
 		return Some(PhysAddr::new_truncate(frame_idx << 12));
 	}
 
 	pub fn free_frame(addr: PhysAddr) {
 		let frame_idx = addr.as_u64() / PAGE_SIZE as u64;
 		bitmap_free(frame_idx);
+		let mut ff = FREE_FRAMES.lock();
+		*ff = *ff + 1;
 	}
 	pub fn free_n_frame(start: PhysAddr, n: usize) {
 		let start_idx = start.as_u64() / PAGE_SIZE as u64;
 		for frame_idx in start_idx..start_idx+n as u64 {
 			bitmap_free(frame_idx);
+			let mut ff = FREE_FRAMES.lock();
+			*ff = *ff + 1;
 		}
+		
 	}
 
 	pub fn get_free_frames() -> u64 {
@@ -238,4 +249,17 @@ fn print_chunk(chunk: u64, addr: u64) {
 			}
 		}
 		ksprint!("]\n");
+}
+
+
+pub fn get_free_frames() -> u64 {
+	return *FREE_FRAMES.lock();
+}
+
+pub fn get_used_frames() -> u64 {
+	return get_total_frames() - get_free_frames();
+}
+
+pub fn get_total_frames() -> u64 {
+	return *TOTAL_FRAMES.lock();
 }

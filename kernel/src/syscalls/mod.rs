@@ -4,10 +4,13 @@ mod user_access;
 
 use core::sync::atomic::Ordering;
 
+use x86_64::registers::rflags::RFlags;
+
 use crate::{
 	arch::x86_64::{asm::current_cr3, syscall::SyscallFrame},
 	klog,
-	scheduler::CURRENT_PID,
+	memory::USER_RANGE,
+	scheduler::{CURRENT_PID, with_current_process},
 	syscalls::{
 		handlers::*,
 		user_access::{clear_user_cr3, enter_kernel_page_table, leave_kernel_page_table, set_user_cr3},
@@ -27,6 +30,7 @@ const fn make_table() -> [SyscallFn; NR_SYSCALLS] {
 	t[SYS_OPEN] = |_, path, flags, mode, _, _, _| sys_open(path, flags, mode);
 	t[SYS_CLOSE] = |_, fd, _, _, _, _, _| sys_close(fd as i32);
 	t[SYS_LSEEK] = |_, fd, offset, whence, _, _, _| sys_lseek(fd as i32, offset as i64, whence as i32);
+	t[SYS_GETPID] = |_,_,_,_,_,_,_|  sys_getpid();
 	t[SYS_FORK] = |_,_,_,_,_,_,f| sys_fork(f);
 	t[SYS_EXECVE] = |_,path,argv,envp,_,_,f| sys_execve(path, argv, envp, f);
 	t[SYS_EXIT] = |_,code,_,_,_,_,_| sys_exit(code);
@@ -49,7 +53,31 @@ pub extern "C" fn syscall_dispatch_rs(syscall_no: u64, frame: &mut SyscallFrame)
 
 	let ret = syscall_dispatcher(syscall_no, frame);
 
-	leave_kernel_page_table(user_cr3);
+	// execve replaces proc.cr3; returning to user must load the *current* page table, not the
+	// snapshot from syscall entry (would map wrong AS → bogus RCX/RIP on sysret, e.g. idle_process).
+	let leave_cr3 = with_current_process(|p| p.cr3).unwrap_or(user_cr3);
+
+	if !USER_RANGE.contains(frame.rip_saved) {
+		let pid = CURRENT_PID.load(Ordering::Acquire);
+		klog!(
+			"[syscall] rip_saved not in USER_RANGE (pid={} nr={} rip={:#x})",
+			pid,
+			syscall_no,
+			frame.rip_saved
+		);
+	}
+
+	if RFlags::from_bits_truncate(frame.rflags_saved).contains(RFlags::TRAP_FLAG) {
+		let pid = CURRENT_PID.load(Ordering::Acquire);
+		klog!(
+			"[syscall] saved rflags has TF set (pid={} nr={} rip={:#x})",
+			pid,
+			syscall_no,
+			frame.rip_saved
+		);
+	}
+
+	leave_kernel_page_table(leave_cr3);
 	clear_user_cr3();
 	ret
 }

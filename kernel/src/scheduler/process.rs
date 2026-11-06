@@ -1,14 +1,15 @@
 
 use core::sync::atomic::AtomicU32;
 
-use x86_64::{PhysAddr, VirtAddr, structures::paging::{FrameDeallocator, Page, PageTableFlags, PhysFrame, Size4KiB}};
+use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
 
-use crate::{arch::x86_64::{asm::current_cr3, gdt::set_tss_rsp0, paging::{duplicate_user_address_space, map_phys_page, new_page_table, switch_pml4}, syscall::{SyscallFrame, fork_child_return}}, elf::load_elf, errno::KernelErrors, ksprint, memory::{PAGE_SIZE, USER_RANGE_END, allocate_n_pages, pmm::PhysAllocator}, scheduler::{CURRENT_KSTACK_TOP, MAX_PROCESS, PROCESS_TABLE, Priority, exit_to_user, process}, vfs::file::VfsFile};
+use crate::{arch::x86_64::{asm::current_cr3, gdt::set_tss_rsp0, paging::{duplicate_user_address_space, free_page_table, map_phys_page, new_page_table, switch_pml4}, syscall::{SyscallFrame, fork_child_return}}, elf::load_elf, errno::KernelErrors, klog, ksprint, memory::{KERNEL_DYNAMIC_MEM_START, PAGE_SIZE, USER_RANGE_END, allocate_n_pages, pmm::{KERNEL_FRAME_ALLOCATOR, PhysAllocator, get_used_frames}}, scheduler::{CURRENT_KSTACK_TOP, MAX_PROCESS, PROCESS_TABLE, Priority, exit_to_user}, vfs::file::VfsFile};
 
 pub type ProcessId = u32;
 pub static NEXT_PID: AtomicU32 = AtomicU32::new(10);
 pub const MAX_FD_PER_PROCESS: usize = 32;
 pub const PROCESS_BASE_NB_PAGE: usize = 1;
+pub const KERNEL_STACK_DEFAULT_NB_PAGES: usize = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
 	Ready,
@@ -18,6 +19,11 @@ pub enum ProcessState {
 	Dead,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockedBy {
+	Stdin,
+	Child
+}
 
 #[repr(C, packed)]
 #[derive(Default, Debug, Clone, Copy)]
@@ -62,6 +68,7 @@ pub struct Process {
 	pub fd_table: [Option<VfsFile>; MAX_FD_PER_PROCESS],
 	pub fork_resume_frame: Option<SyscallFrame>,
 	pub exit_code: u32,
+	pub blocked_by: Option<BlockedBy>
 }
 
 
@@ -109,7 +116,7 @@ impl Process {
 
 		let user_rsp = user_stack_page.start_address().as_u64() + (PAGE_SIZE * user_stack_nb_pages) as u64;
 	
-		let kernel_stack_nb_pages = 8;
+		let kernel_stack_nb_pages = KERNEL_STACK_DEFAULT_NB_PAGES;
 		let kernel_stack_buffer_addr = allocate_n_pages(kernel_stack_nb_pages);
 		let kernel_stack_base = kernel_stack_buffer_addr.as_u64() as usize;
 		let kernel_stack_top = kernel_stack_buffer_addr.as_u64() + (PAGE_SIZE * kernel_stack_nb_pages) as u64;
@@ -146,6 +153,47 @@ impl Process {
 			fd_table,
 			fork_resume_frame: None,
 			exit_code: 0,
+			blocked_by: None,
+		}
+	}
+
+	/// Kernel thread. `context_switch` `ret`s straight to `entry_point` with CS still ring 0.
+	pub fn new_kernel(
+		pid: ProcessId, ppid: ProcessId, entry_point: usize, process_cr3: u64,
+	) -> Process {
+		let kernel_stack_nb_pages = KERNEL_STACK_DEFAULT_NB_PAGES;
+		let kernel_stack_buffer_addr = allocate_n_pages(kernel_stack_nb_pages);
+		let kernel_stack_top = kernel_stack_buffer_addr.as_u64() + (PAGE_SIZE * kernel_stack_nb_pages) as u64;
+		// 16 zeroed regs, then the entry point. The return slot is 16 bytes below the
+		// top so `ret` enters the function with RSP ≡ 8 (mod 16).
+		let mut ksp = kernel_stack_top as *mut u64;
+		unsafe {
+			ksp = ksp.offset(-2);
+			*ksp = entry_point as u64;
+			for _ in 0..16 {
+				ksp = ksp.offset(-1);
+				*ksp = 0;
+			}
+		}
+		let fd_table = [const {None}; MAX_FD_PER_PROCESS];
+
+		Self {
+			pid,
+			ppid,
+			state: ProcessState::Ready,
+			ticks: 0,
+			wake_tick: 0,
+			priority: Priority::Critial,
+			cr3: process_cr3,
+			rsp: 0,
+			krsp: ksp as u64,
+			next_pid: None,
+			kstack_top: kernel_stack_top,
+			ctx: CpuContext::new(),
+			fd_table,
+			fork_resume_frame: None,
+			exit_code: 0,
+			blocked_by: None,
 		}
 	}
 
@@ -155,8 +203,18 @@ impl Process {
 		self.state = ProcessState::Sleeping;
 	}
 
+	pub fn block(&mut self, reason: BlockedBy) {
+		self.blocked_by = Some(reason);
+		self.state = ProcessState::Blocked;
+	}
+
 	pub fn wake(&mut self) {
 		self.wake_tick = 0;
+		self.state = ProcessState::Ready;
+	}
+
+	pub fn unblock(&mut self) {
+		self.blocked_by = None;
 		self.state = ProcessState::Ready;
 	}
 }
@@ -168,7 +226,7 @@ pub fn fork_child_from(parent: &Process, frame: &SyscallFrame) -> Result<Process
 		return Err(KernelErrors::EAGAIN);
 	}
 	
-	let kernel_stack_nb_pages = 8;
+	let kernel_stack_nb_pages = KERNEL_STACK_DEFAULT_NB_PAGES;
 	let kernel_stack_buffer_addr = allocate_n_pages(kernel_stack_nb_pages);
 	let kernel_stack_base = kernel_stack_buffer_addr.as_u64() as usize;
 	let kernel_stack_top = kernel_stack_buffer_addr.as_u64() + (PAGE_SIZE * kernel_stack_nb_pages) as u64;
@@ -202,6 +260,7 @@ pub fn fork_child_from(parent: &Process, frame: &SyscallFrame) -> Result<Process
 			ticks: 0, wake_tick: 0, next_pid: None, priority: Priority::Critial,
 			fork_resume_frame: Some(*frame),
 			exit_code: 0,
+			blocked_by: None,
 		}
 	)
 
@@ -293,7 +352,7 @@ pub fn map_user_stack_in_current_cr3(nb_pages: usize) -> Result<u64, KernelError
 
 fn kernel_stack_bootstrap(user_rsp: u64, entry_point: u64, return_fn: u64) -> (u64, u64) {
 
-	let kernel_stack_nb_pages = 8;
+	let kernel_stack_nb_pages = KERNEL_STACK_DEFAULT_NB_PAGES;
 	let kernel_stack_buffer_addr = allocate_n_pages(kernel_stack_nb_pages);
 	let kernel_stack_base = kernel_stack_buffer_addr.as_u64() as usize;
 	let kernel_stack_top = kernel_stack_buffer_addr.as_u64() + (PAGE_SIZE * kernel_stack_nb_pages) as u64;
@@ -354,9 +413,24 @@ pub fn has_waitable_child(parent_pid: ProcessId) -> bool {
 }
 
 pub fn reap(pid: ProcessId) {
+	let used_before = get_used_frames() as i64;
 	let mut pt = PROCESS_TABLE.lock();
-	if let Some(proc) = pt[pid as usize].take() {
-		//deallocate stuff here
+	if let Some(proc) = pt[pid as usize].take().as_mut() {
+		if proc.pid == 0 { drop(pt);return; }
+		let mut allocator = KERNEL_FRAME_ALLOCATOR.lock();
+		free_page_table(proc.cr3, &mut *allocator);
+
+		let proc_kernel_stack_base = proc.kstack_top - (KERNEL_STACK_DEFAULT_NB_PAGES * PAGE_SIZE) as u64;
+		let phys_proc_kernel_stack_base = PhysAddr::new(proc_kernel_stack_base - KERNEL_DYNAMIC_MEM_START);
+		PhysAllocator::free_n_frame(phys_proc_kernel_stack_base, KERNEL_STACK_DEFAULT_NB_PAGES);
+
+		for fd in proc.fd_table.as_mut() {
+			fd.take();
+		}
+
 	}
+	let used_after = get_used_frames() as i64;
+	let freed = used_before - used_after;
+	klog!("Reap freed {} frames", freed);
 	drop(pt);
 }

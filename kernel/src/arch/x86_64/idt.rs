@@ -12,6 +12,8 @@ pub const NVME_INT_VECTOR: u8 = 0x40;
 lazy_static! {
 	static ref IDT: InterruptDescriptorTable = {
 		let mut idt = InterruptDescriptorTable::new();
+		// Vector 1 (#DB). If missing, delivery of #DB becomes #NP with IDT idx 1 (common with TF/debug regs).
+		idt.debug.set_handler_fn(debug_handler).set_privilege_level(x86_64::PrivilegeLevel::Ring3);
 		idt.breakpoint.set_handler_fn(breakpoint_handler).set_privilege_level(x86_64::PrivilegeLevel::Ring3);
 		idt.double_fault.set_handler_fn(double_fault_handler);
 		idt.page_fault.set_handler_fn(page_fault_handler);
@@ -140,6 +142,19 @@ extern "x86-interrupt" fn gpf_handler(
 	}
 
 	kpanic!("GENERAL PROTECTION FAULT ! {err}\n");
+}
+
+extern "x86-interrupt" fn debug_handler(sf: InterruptStackFrame) {
+	use x86_64::registers::debug::Dr6;
+	ksprint!("-------- #DB (debug) --------\n");
+	ksprint!("rip: {:#x}\n", sf.instruction_pointer.as_u64());
+	ksprint!("cs: {:#x}\n", sf.code_segment.0);
+	ksprint!("rflags: {:#x}\n", sf.cpu_flags.bits());
+	ksprint!("dr6: {:#x}\n", Dr6::read().bits());
+	ksprint!("----------------------------\n");
+	loop {
+		unsafe { core::arch::asm!("hlt") }
+	}
 }
 
 extern "x86-interrupt" fn breakpoint_handler(
