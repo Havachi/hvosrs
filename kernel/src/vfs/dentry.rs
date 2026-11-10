@@ -1,6 +1,6 @@
 use core::mem::MaybeUninit;
 
-use alloc::sync::Arc;
+use alloc::{string::String, sync::Arc};
 
 use crate::{errno::KernelErrors::{self, EINVAL}, vfs::{InodeId, inode::Inode}};
 
@@ -41,5 +41,20 @@ impl VfsDentry {
 
 	pub fn get_inode_id(&self) -> InodeId {
 		self.inode.id()
+	}
+}
+
+
+pub struct VfsDirent {
+	pub ino: InodeId,
+	pub name: alloc::string::String,
+	pub is_dir: bool,
+}
+
+impl VfsDirent {
+	pub fn new(ino: InodeId, name: String, is_dir: bool) -> Self {
+		Self {
+			ino,name,is_dir
+		}
 	}
 }

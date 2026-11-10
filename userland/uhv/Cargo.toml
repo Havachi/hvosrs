@@ -7,3 +7,5 @@ edition = "2024"
 name = "uhv"
 
 [dependencies]
+talc = "5.1.1"
+spin = "0.12.3"

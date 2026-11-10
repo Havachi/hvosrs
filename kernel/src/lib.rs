@@ -56,9 +56,9 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 macro_rules! kprint {
 	($($arg:tt)*) => {
 		$crate::drivers::console::_console_print(format_args!($($arg)*));
-		$crate::debug::_ksprint(format_args!($($arg)*));
 	};
 }
+
 
 #[macro_export]
 macro_rules! ksprint {

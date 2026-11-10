@@ -31,6 +31,7 @@ pub enum KernelErrors {
 	ENOMEM = 12,
 	///Permission Denied
 	EACCESS = 13,
+	//Bad address
 	EFAULT = 14,
 	///Ressource or device busy
 	EBUSY = 16,

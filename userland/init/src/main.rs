@@ -10,10 +10,12 @@ pub extern "C" fn _start() -> ! {
 	print("[INIT] Started\n");
 
 
-	let dirs = ["bin", "boot", "dev", "etc", "lib", "media", "mnt", "opt", "run", "sbin", "srv", "tmp", "usr", "var"];
+	let dirs = ["boot", "dev", "etc", "lib", "media", "mnt", "opt", "run", "sbin", "srv", "tmp", "usr", "var"];
 
 	for dir in dirs {
-		mkdir(dir);
+		if mkdir(dir) != 0 {
+			eprintln!("error creating dir {}", dir)
+		}
 	}
 	//print("[INIT] Created basic fs layout\n");
 	let f = fork();

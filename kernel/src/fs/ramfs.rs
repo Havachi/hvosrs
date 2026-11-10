@@ -1,21 +1,22 @@
 use core::{cmp::min, sync::atomic::AtomicUsize};
 
-use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use spin::Mutex;
-use crate::{errno::KernelErrors::{self, EEXIST, EINVAL, ENOTDIR}, kerror, vfs::{InodeId, dentry::VfsDentry, filesystem::VfsFilesystem, inode::{Inode, VfsInodeType::{self, Dir, File}}, next_inode_id}};
+use crate::{errno::KernelErrors::{self, EEXIST, EINVAL, ENOTDIR}, kerror, klog, vfs::{self, InodeId, dentry::{VfsDentry, VfsDirent}, filesystem::VfsFilesystem, inode::{Inode, VfsInodeType::{self, Dir, File}}, next_inode_id}};
 
 pub type RamfsDir = BTreeMap<Box<str>, Arc<RamFsInode>>;
 pub type RamfsFile = Vec<u8>;
 
 pub const RAMFS_NAME: [u8;16] = [b'r',b'a',b'm',b'f',b's',0,0,0,0,0,0,0,0,0,0,0];
 
-
+#[derive(Debug)]
 pub struct RamFsInode {
 	id: InodeId,
 	vtype: VfsInodeType,
 	size: AtomicUsize,
 	dir: Option<Mutex<RamfsDir>>,
 	file: Option<Mutex<RamfsFile>>,
+	parent_id: InodeId,
 }
 
 impl RamFsInode {
@@ -26,30 +27,33 @@ impl RamFsInode {
 				vtype: Dir,
 				size: AtomicUsize::new(0),
 				dir: Some(Mutex::new(RamfsDir::new())),
-				file:None
+				file:None,
+				parent_id: 0,
 			}
 		)
 	}
 
-	pub fn new_dir(id: InodeId) -> Arc<Self> {
+	pub fn new_dir(id: InodeId, parent_id: u64) -> Arc<Self> {
 		Arc::new(
 			Self {
 				id,
 				vtype: Dir,
 				size: AtomicUsize::new(0),
 				dir: Some(Mutex::new(RamfsDir::new())),
-				file: None
+				file: None,
+				parent_id: parent_id,
 			}
 		)
 	}
-	pub fn new_file(id: InodeId) -> Arc<Self> {
+	pub fn new_file(id: InodeId, parent_id: u64) -> Arc<Self> {
 		Arc::new(
 			Self {
 				id,
 				vtype: File,
 				size: AtomicUsize::new(0),
 				dir: None,
-				file: Some(Mutex::new(Vec::<u8>::new()))
+				file: Some(Mutex::new(Vec::<u8>::new())),
+				parent_id: parent_id,
 			}
 		)
 	}
@@ -111,7 +115,7 @@ impl Inode for RamFsInode {
 			return Err(EEXIST);
 		}
 		let next_id = next_inode_id();
-		let child = RamFsInode::new_file(next_id);
+		let child = RamFsInode::new_file(next_id, self.id);
 		dir.insert(basename.into(), child);
 
 		Ok(())
@@ -119,22 +123,19 @@ impl Inode for RamFsInode {
 	
 	fn mkdir(self: Arc<Self>, basename: &str) -> Result<(), KernelErrors> {
 		if !self.is_dir() || self.dir.is_none() {
-			kerror!("Parent is not a dir");
 			return Err(ENOTDIR);
 		}
 		if basename.is_empty() || basename.len() > 255 || basename.contains('/') {
-			kerror!("Invalid name: '{}'", basename);
 			return Err(EINVAL);
 		}
 		let mut dir = self.dir.as_ref().unwrap().lock();
 		if dir.contains_key(basename){
-			kerror!("'{}' Already exists", basename);
 			return Err(EEXIST);
 		}
+		
 		let next_id = next_inode_id();
-		let child = RamFsInode::new_dir(next_id);
+		let child = RamFsInode::new_dir(next_id, self.id);
 		dir.insert(basename.into(), child);
-
 		Ok(())
 	}
 
@@ -164,6 +165,30 @@ impl Inode for RamFsInode {
 		data[start..end].copy_from_slice(buf);
 		self.size.store(data.len(), core::sync::atomic::Ordering::Relaxed);
 		Ok(buf.len())
+	}
+	
+	fn readdir(self: Arc<Self>, index: u64) -> Result<Option<VfsDirent>, KernelErrors> {
+		if self.is_file() {
+			return Err(KernelErrors::ENOTDIR);
+		}
+		if index == 0 {
+			return Ok(Some(VfsDirent::new(self.id, String::from("."), true)))
+		} else if index == 1 {
+			return Ok(Some(VfsDirent::new(self.parent_id, String::from(".."), true)))
+		} else {
+			if let Some(d) = self.dir.as_ref() {
+				let parent = d.lock();
+				let ent = parent.iter().nth((index - 2) as usize);
+				if let Some((key, value)) = ent {
+					let dirent = VfsDirent::new(value.id, String::from(key.as_ref()), value.is_dir());
+					drop(parent);
+					return Ok(Some(dirent))
+				} else {
+					return Ok(None);
+				}
+			}
+		}
+		Ok(None)
 	}
 }
 

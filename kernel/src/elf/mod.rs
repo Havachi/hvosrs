@@ -67,7 +67,38 @@ pub fn load_elf(data: &[u8]) -> Result<u64,&'static str> {
 		}
 		let phdr = unsafe {&*(data.as_ptr().add(offset) as *const Elf64Phdr)};
 		if phdr.p_type == PT_LOAD {
+			if phdr.p_memsz < phdr.p_filesz {
+				return Err("ELF segment memsz < filesz");
+			}
+			if phdr.p_memsz == 0 {
+				continue;
+			}
 			let dest_ptr = phdr.p_vaddr as *mut u8;
+			let seg_end = phdr.p_vaddr.checked_add(phdr.p_memsz).ok_or("ELF segment too large")?;
+			let map_begin = phdr.p_vaddr & !(PAGE_SIZE as u64 - 1);
+			let map_end = (seg_end + PAGE_SIZE as u64 - 1) & !(PAGE_SIZE as u64 - 1);
+			let nb_pages = ((map_end - map_begin) / PAGE_SIZE as u64) as usize;
+
+			let Some(frame) = PhysAllocator::allocate_n_frame(nb_pages) else {
+				kpanic!("OOM while loading a ELF")
+			};
+			let flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE;
+			for p in 0..nb_pages as u64 {
+				let virt = VirtAddr::new(map_begin).add(p * PAGE_SIZE as u64);
+				let page = Page::<Size4KiB>::containing_address(virt);
+				let physframe = PhysFrame::containing_address(frame.add(p * PAGE_SIZE as u64));
+				let res = unsafe { map_phys_page(page, physframe, flags, &mut PhysAllocator) };
+				match res {
+					Ok(_) => {},
+					Err(e) => {
+						match e {
+							MapToError::PageAlreadyMapped(_) => continue,
+							err => { kpanic!("Allocation Failed\n {:?}", err) }
+						}
+					}
+				}
+			}
+
 			if phdr.p_filesz > 0 {
 				let src_offset = phdr.p_offset as usize;
 				if src_offset + phdr.p_filesz as usize > data.len() {
@@ -75,32 +106,8 @@ pub fn load_elf(data: &[u8]) -> Result<u64,&'static str> {
 				}
 				unsafe {
 					let src_ptr = data.as_ptr().add(src_offset);
-					let nb_pages = (phdr.p_filesz as usize + PAGE_SIZE - 1) / PAGE_SIZE;
-					if let Some(frame) = PhysAllocator::allocate_n_frame(nb_pages){
-						let flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE;
-						for p in 0..nb_pages as u64 {
-
-							let virt = VirtAddr::new(phdr.p_vaddr).add(p * PAGE_SIZE as u64);
-							let page = Page::<Size4KiB>::containing_address(virt);
-							let physframe = PhysFrame::containing_address(frame.add(p * PAGE_SIZE as u64));
-							let res = map_phys_page(page, physframe, flags, &mut PhysAllocator);
-							match res {
-								Ok(_) => {},
-								Err(e) => {
-									match e {
-										MapToError::PageAlreadyMapped(_) => continue,
-										err => { kpanic!("Allocation Failed\n {:?}", err) }
-									}
-								}
-							}
-
-						}
-						core::ptr::copy_nonoverlapping(src_ptr, dest_ptr, phdr.p_filesz as usize);
-					} else {
-						kpanic!("OOM while loading a ELF")
-					}
-
-				};
+					core::ptr::copy_nonoverlapping(src_ptr, dest_ptr, phdr.p_filesz as usize);
+				}
 			}
 			if phdr.p_memsz > phdr.p_filesz {
 				unsafe {

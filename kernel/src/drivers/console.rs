@@ -1,6 +1,6 @@
 use core::fmt;
 
-use embedded_graphics::{draw_target::DrawTarget, geometry::Point};
+use embedded_graphics::{draw_target::DrawTarget, geometry::Point, pixelcolor::{Rgb888, RgbColor}};
 use lazyinit::LazyInit;
 use spin::Mutex;
 
@@ -32,6 +32,9 @@ pub struct KernelConsole{
 	ansi_state: AnsiState,
 	ansi_args: [u8; 16],
 	ansi_arg_len: usize,
+	bold: bool,
+	default_fg: Rgb888,
+	default_bg: Rgb888,
 }
 
 impl KernelConsole {
@@ -47,6 +50,9 @@ impl KernelConsole {
 			ansi_state: AnsiState::Normal,
 			ansi_args: [0; 16],
 			ansi_arg_len: 0,
+			bold: false,
+			default_fg: Rgb888::WHITE,
+			default_bg: Rgb888::BLACK,
 		};
 		let char_size = kc.output.character_size();
 		let max_col = screen_width / char_size.width as u64;
@@ -56,25 +62,7 @@ impl KernelConsole {
 		kc
 	}
 
-	/// Raw byte output for syscalls (no ANSI); minimal stack use.
-	pub fn write_raw_byte(&mut self, c: u8) {
-		if c == b'\n' {
-			self.new_line();
-			return;
-		}
-		if c < 0x20 || c == 0x7f {
-			return;
-		}
-		self.output.draw_ascii_byte(c, self.col, self.line);
-		self.col += 1;
-		if self.col as u64 >= self.max_col {
-			self.new_line();
-		}
-	}
-
 	pub fn write_char(&mut self, c: u8) {
-
-
 		match self.ansi_state {
 			AnsiState::Normal => {
 				if c == b'\x1B' {
@@ -82,15 +70,19 @@ impl KernelConsole {
 					self.ansi_arg_len = 0;
 				} else if c == b'\n' {
 					self.new_line();
+				} else if c < 0x20 || c == 0x7f {
 				} else {
 					let font_size = self.output.character_size();
 					let pos = Point {
 						x: ((self.col * font_size.width) as i32),
 						y: ((self.line * font_size.height) as i32)
 					};
-					self.col += 1;
 					if let Ok(s) = str::from_utf8(&[c]) {
 						let _ = self.output.write_str(s, pos);
+					}
+					self.col += 1;
+					if self.col as u64 >= self.max_col {
+						self.new_line();
 					}
 				}
 			},
@@ -117,15 +109,17 @@ impl KernelConsole {
 	}
 
 	fn execute_ansi_control(&mut self, terminator: u8) {
-		let args = &self.ansi_args[..self.ansi_arg_len];
+		let len = self.ansi_arg_len.min(self.ansi_args.len());
+		let mut args_buf = [0u8; 16];
+		args_buf[..len].copy_from_slice(&self.ansi_args[..len]);
+		let args = &args_buf[..len];
 
 		match terminator {
 			b'J' => {
 				self.clear();
-				return;
 			}
 			b'm' => {
-
+				self.apply_sgr(args);
 			}
 			b'H' => {
 				let mut c = 1;
@@ -144,13 +138,57 @@ impl KernelConsole {
 				}
 				self.col = c;
 				self.line = l;
-				return;
 			}
-			_ => {
+			_ => {}
+		}
+	}
 
+	fn apply_sgr(&mut self, args: &[u8]) {
+		if args.is_empty() {
+			self.apply_sgr_code(0);
+			return;
+		}
+		let mut value: u16 = 0;
+		let mut seen_digit = false;
+		for &b in args {
+			if b == b';' {
+				let code = if seen_digit { value.min(255) as u8 } else { 0 };
+				self.apply_sgr_code(code);
+				value = 0;
+				seen_digit = false;
+			} else if b.is_ascii_digit() {
+				seen_digit = true;
+				value = value.saturating_mul(10).saturating_add((b - b'0') as u16);
 			}
- 		}
-		
+		}
+		let code = if seen_digit { value.min(255) as u8 } else { 0 };
+		self.apply_sgr_code(code);
+	}
+
+	fn apply_sgr_code(&mut self, code: u8) {
+		match code {
+			0 => {
+				self.bold = false;
+				self.output.fg_color = self.default_fg;
+				self.output.bg_color = self.default_bg;
+			}
+			1 => self.bold = true,
+			39 => self.output.fg_color = self.default_fg,
+			49 => self.output.bg_color = self.default_bg,
+			30..=37 => {
+				self.output.fg_color = vga_color((code - 30) as usize, self.bold);
+			}
+			90..=97 => {
+				self.output.fg_color = vga_color((code - 90) as usize, true);
+			}
+			40..=47 => {
+				self.output.bg_color = vga_color((code - 40) as usize, false);
+			}
+			100..=107 => {
+				self.output.bg_color = vga_color((code - 100) as usize, true);
+			}
+			_ => {}
+		}
 	}
 
 	pub fn clear(&mut self) {
@@ -207,11 +245,45 @@ pub fn _console_print(args: fmt::Arguments) {
 	});
 }
 
+pub fn _console_eprint(args: fmt::Arguments) {
+	use fmt::Write;
+	x86_64::instructions::interrupts::without_interrupts(|| {
+		let mut l = KONSOLE.lock();
+		let args = format_args!("\x1b[31m{}\x1b[0m", args);
+		let _ = l.write_fmt(args);
+	});
+}
+
 /// Raw byte output for syscalls (fd 1): framebuffer plus serial mirror for `-nographic`.
 pub fn write_bytes(data: &[u8]) {
 	let mut konsole = KONSOLE.lock();
 	for &b in data {
-		konsole.write_raw_byte(b);
+		konsole.write_char(b);
 		crate::drivers::serial::write_byte(b);
 	}
+}
+
+fn vga_color(index: usize, bright: bool) -> Rgb888 {
+	const NORMAL: [(u8, u8, u8); 8] = [
+		(0, 0, 0),
+		(170, 0, 0),
+		(0, 170, 0),
+		(170, 85, 0),
+		(0, 0, 170),
+		(170, 0, 170),
+		(0, 170, 170),
+		(170, 170, 170),
+	];
+	const BRIGHT: [(u8, u8, u8); 8] = [
+		(85, 85, 85),
+		(255, 85, 85),
+		(85, 255, 85),
+		(255, 255, 85),
+		(85, 85, 255),
+		(255, 85, 255),
+		(85, 255, 255),
+		(255, 255, 255),
+	];
+	let (r, g, b) = if bright { BRIGHT[index] } else { NORMAL[index] };
+	Rgb888::new(r, g, b)
 }

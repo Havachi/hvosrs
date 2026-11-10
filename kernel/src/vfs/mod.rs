@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
-use crate::{errno::KernelErrors, fs::{self, ramfs::RAMFS_NAME}, kerror, klog, ksprint, vfs::{dentry::VfsDentry, file::{VfsFile, VfsFileOpenflags}, filesystem::FST_REG, inode::NEXT_INO, path::{path_basename, path_parent, path_walk}}};
+use crate::{errno::KernelErrors, fs::{self, ramfs::RAMFS_NAME}, kerror, klog, ksprint, scheduler::process::get_cwd, vfs::{dentry::VfsDentry, file::{VfsFile, VfsFileOpenflags}, filesystem::FST_REG, inode::NEXT_INO, path::{path_basename, path_parent, path_walk}}};
 
 static ROOT_DENTRY: Mutex<Option<Arc<VfsDentry>>> = Mutex::new(None);
 pub const MAX_EXEC_IMAGE: usize = 16 * 1024 * 1024;
@@ -27,11 +27,8 @@ pub fn init() {
 		return;
 	}
 
-	let dirs = ["/bin", "/boot", "/dev", "/etc", "/home", "/mnt", "/lib", "/opt", "/usr", "/var", "/tmp"];
-	for dir in dirs {
-		if let Err(e) = mkdir(dir) {
-			kerror!("Error while creating fs layout: {:?}", e)
-		}
+	if let Err(e) = mkdir("/bin") {
+		kerror!("Error while creating fs layout: {:?}", e)
 	}
 	klog!("VFS init done");
 }
@@ -54,19 +51,17 @@ pub fn lookup(path: &str, cwd: Option<Arc<VfsDentry>>) -> Result<Arc<VfsDentry>,
 pub fn mkdir(path: &str) -> Result<(), KernelErrors> {
 	let parent = path_parent(path)?;
 	let basename = path_basename(path)?;
-
-	let parent_dentry = lookup(parent, None)?;
+	let parent_dentry = lookup(parent, get_cwd())?;
 	if !parent_dentry.inode.is_dir() {
 		return Err(KernelErrors::ENOTDIR);
 	}
-
 	parent_dentry.inode.clone().mkdir(basename)
 }
 
 pub fn create(path: &str) -> Result<(), KernelErrors> {
 	let parent = path_parent(path)?;
 	let basename = path_basename(path)?;
-	let parent_dentry = lookup(parent, None)?;
+	let parent_dentry = lookup(parent, get_cwd())?;
 	if !parent_dentry.inode.is_dir() {
 		return Err(KernelErrors::ENOTDIR);
 	}
@@ -76,13 +71,16 @@ pub fn create(path: &str) -> Result<(), KernelErrors> {
 
 pub fn open(path: &str, flags: u32) -> Result<VfsFile, KernelErrors> {
 	let vfs_flags = VfsFileOpenflags::from_bits_truncate(flags);
-	let dentry = match lookup(path, None) {
+	let dentry = match lookup(path, get_cwd()) {
 		Ok(dentry) => {
+			if vfs_flags.contains(VfsFileOpenflags::O_DIRECTORY) && !dentry.inode.is_dir() {
+				return Err(KernelErrors::ENOTDIR);
+			}
 			//file exist
 			if vfs_flags.contains(VfsFileOpenflags::O_CREAT | VfsFileOpenflags::O_EXCL) {
 				return Err(KernelErrors::EEXIST);
 			}
-			if dentry.inode.is_dir() {
+			if dentry.inode.is_dir() && !vfs_flags.contains(VfsFileOpenflags::O_DIRECTORY) {
 				return Err(KernelErrors::EISDIR);
 			}
 			if vfs_flags.contains(VfsFileOpenflags::O_TRUNC) {
@@ -94,7 +92,7 @@ pub fn open(path: &str, flags: u32) -> Result<VfsFile, KernelErrors> {
 		Err(err) if err == KernelErrors::ENOENT && vfs_flags.contains(VfsFileOpenflags::O_CREAT) => {
 			//file not exists but flags O_CREAT
 			create(path)?;
-			match lookup(path, None) {
+			match lookup(path, get_cwd()) {
 				Ok(dentry) => dentry,
 				Err(err) => return Err(err),
 			}
@@ -187,3 +185,4 @@ pub fn read_file_all(file: &mut VfsFile) -> Result<Vec<u8>, KernelErrors> {
 	}
 	Ok(buf)
 }
+

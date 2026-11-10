@@ -1,7 +1,7 @@
 use limine::memmap::*;
 use spin::Mutex;
 use x86_64::{PhysAddr, structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame, Size4KiB, frame}};
-use crate::{kerror, kpanic, ksprint, memory::PAGE_SIZE};
+use crate::{kerror, kpanic, ksprint, memory::{PAGE_SIZE, allocate_n_pages}};
 
 //Whole bitmap can cover 256Gio
 const BITMAP_LEN: usize = 1024 * 1024;
@@ -36,7 +36,7 @@ impl FrameDeallocator<Size4KiB> for PhysAllocator {
 }
 
 impl PhysAllocator {
-	pub fn allocate_n_frame(n: usize) -> Option<PhysAddr>{
+	pub fn allocate_n_frame(n: usize) -> Option<PhysAddr> {
 		let frame_idx = bitmap_next_free_range(n)?;
 		bitmap_set_n(frame_idx, n);
 		let mut ff = FREE_FRAMES.lock();

@@ -38,6 +38,10 @@ pub const USER_RANGE_START: u64 = 0x0000_0000_0000_0000;
 pub const USER_RANGE_END: u64 = 0x0000_7FFF_FFFF_FFFF;
 pub const USER_RANGE: AddrRange = AddrRange::new(USER_RANGE_START, USER_RANGE_END);
 
+pub const USER_HEAP_START: u64 = 0x0000_0000_4000_0000;
+pub const USER_HEAP_END: u64 = 0x0000_0000_4400_0000;
+pub const USER_HEAP_RANGE: AddrRange = AddrRange::new(USER_HEAP_START, USER_HEAP_END);
+
 
 pub static HHDM_OFFSET: Mutex<Option<u64>> = Mutex::new(None);
 pub const PAGE_SIZE: usize = 4096;

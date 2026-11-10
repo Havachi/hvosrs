@@ -1,10 +1,13 @@
 use core::str;
 
 
+use alloc::vec::Vec;
+use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
+
 use crate::{
-	arch::x86_64::syscall::SyscallFrame, drivers::{console, io::getchar, serial}, errno::KernelErrors::{self, EAGAIN}, klog, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, block_current, process::{self, find_zombie, fork_child_from, has_waitable_child, reap}, schedule, with_current_process}, syscalls::{
-		errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr},
-	}, vfs::{self, SeekOrigin, file::VfsFileOpenflags, mkdir},
+	arch::x86_64::{paging::{map_phys_page, switch_pml4}, syscall::SyscallFrame}, drivers::{console, io::getchar, serial}, errno::KernelErrors::{self, EAGAIN}, klog, memory::{PAGE_SIZE, USER_HEAP_RANGE, pmm::PhysAllocator}, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, block_current, process::{self, find_zombie, fork_child_from, has_waitable_child, reap}, schedule, with_current_process}, syscalls::{
+		errno::EFAULT, user_access::{copy_from_user, copy_from_user_into, copy_to_user, copy_user_cstr},
+	}, vfs::{self, SeekOrigin, file::{AT_FDCWD, VfsFileOpenflags}, mkdir, path::is_absolute},
 };
 
 pub const SYS_READ: usize = 0;
@@ -12,12 +15,16 @@ pub const SYS_WRITE: usize = 1;
 pub const SYS_OPEN: usize = 2;
 pub const SYS_CLOSE: usize = 3;
 pub const SYS_LSEEK: usize = 4;
+pub const SYS_BRK: usize = 12;
 pub const SYS_GETPID: usize = 39;
 pub const SYS_FORK: usize = 57;
 pub const SYS_EXECVE: usize = 59;
 pub const SYS_EXIT: usize = 60;
+pub const SYS_GETDENTS: usize = 78;
+pub const SYS_CHDIR: usize = 80;
 pub const SYS_MKDIR: usize = 83;
 pub const SYS_WAITID: usize = 247;
+pub const SYS_OPENAT: usize = 257;
 
 const MAX_IO: usize = 4096;
 const MAX_PATH: usize = 4096;
@@ -113,9 +120,7 @@ pub fn sys_write(fd: i32, user_buf: u64, count: usize) -> i64 {
 			count as i64
 		}
 		2 => {
-			for &b in &buf {
-				serial::write_byte(b);
-			}
+			console::_console_eprint(format_args!("{}", str::from_utf8(&buf).unwrap_or("<invalid utf8>")));
 			count as i64
 		}
 		_ => match with_current_process(|proc| {
@@ -140,9 +145,11 @@ pub fn sys_open(path_ptr: u64, flags: u64, _mode: u64) -> i64 {
 	};
 	let path = match str::from_utf8(&path_bytes) {
 		Ok(s) => s,
-		Err(_) => return neg(KernelErrors::EINVAL),
+		Err(_) => {
+			return neg(KernelErrors::EINVAL)
+		},
 	};
-
+	klog!("sys_open: {path}");
 	let file = match vfs::open(path, flags as u32) {
 		Ok(f) => f,
 		Err(e) => return neg(e),
@@ -158,6 +165,41 @@ pub fn sys_open(path_ptr: u64, flags: u64, _mode: u64) -> i64 {
 		None => neg(KernelErrors::EBADF),
 	}
 }
+
+
+pub fn sys_openat(dfd: u64, path_ptr: u64, flags: u64, _mode: u64) -> i64 {
+	let path_bytes = match copy_user_cstr(path_ptr, MAX_PATH) {
+		Ok(b) => b,
+		Err(e) => return e,
+	};
+	let path = match str::from_utf8(&path_bytes) {
+		Ok(s) => s,
+		Err(_) => {
+			return neg(KernelErrors::EINVAL)
+		},
+	};
+
+	if !is_absolute(path) && dfd != AT_FDCWD as u64 {
+		return neg(KernelErrors::EBADF);
+	} else{
+		klog!("sys_open: {path}");
+		let file = match vfs::open(path, flags as u32) {
+			Ok(f) => f,
+			Err(e) => return neg(e),
+		};
+
+		match with_current_process(|proc| {
+			let fd = alloc_fd(proc).ok_or(KernelErrors::EINVAL)?;
+			proc.fd_table[fd as usize] = Some(file);
+			Ok(fd)
+		}) {
+			Some(Ok(fd)) => fd as i64,
+			Some(Err(e)) => neg(e),
+			None => neg(KernelErrors::EBADF),
+		}
+	}
+}
+
 
 pub fn sys_close(fd: i32) -> i64 {
 	if fd < 3 {
@@ -216,12 +258,18 @@ pub fn sys_mkdir(path_ptr: u64) -> i64 {
 	};
 	let path = match str::from_utf8(&path_bytes) {
 		Ok(s) => s,
-		Err(_) => return neg(KernelErrors::EINVAL),
+		Err(_) => {
+			return neg(KernelErrors::EINVAL)
+		},
 	};
 
 	match mkdir(path) {
-		Ok(_) => 0,
-		Err(err) => neg(err),
+		Ok(_) =>  {
+			0
+		},
+		Err(err) => {
+			neg(err)
+		},
 	}
 }
 
@@ -311,4 +359,121 @@ pub fn sys_waitid(id_type: u64, id: u64, _infop: u64, _options: u64, frame: &Sys
 pub fn sys_getpid() -> i64 {
 	let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed);
 	return current_pid as i64;
+}
+pub fn sys_brk(addr: u64) -> i64 {
+	if addr == 0 {
+		return with_current_process(|proc| {
+			proc.brk
+		}).unwrap() as i64;
+	} else if USER_HEAP_RANGE.contains(addr) {
+		with_current_process(|p| {
+			let current_brk = p.brk;
+			//ignoring negative
+			if addr < current_brk {
+				return 0;
+			}
+			let diff = addr - p.brk;
+			let nb_pages = (diff + (PAGE_SIZE as u64) - 1) / PAGE_SIZE as u64;
+
+			let frames = match PhysAllocator::allocate_n_frame(nb_pages as usize) {
+				Some(ok) => ok,
+				None => return neg(KernelErrors::ENOMEM),
+			};
+			let (current_cr3, _) = Cr3::read();
+			unsafe { switch_pml4(PhysFrame::containing_address(PhysAddr::new(p.cr3))) };
+			for p in 0..nb_pages {
+				let phys = frames.as_u64() + (p * PAGE_SIZE as u64);
+
+				
+				let page = Page::<Size4KiB>::containing_address(
+					VirtAddr::new(current_brk + (p * PAGE_SIZE as u64))
+				);
+
+				unsafe {
+					match map_phys_page(
+						page,
+						PhysFrame::containing_address(PhysAddr::new(phys)), 
+						PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE,
+						&mut PhysAllocator
+					) {
+						Ok(_) => {
+							page.start_address().as_mut_ptr::<u8>().write_bytes(0, PAGE_SIZE);
+						},
+						Err(_) => {
+							return neg(KernelErrors::ENOMEM);
+						},
+					}
+				};
+
+			}
+			unsafe { switch_pml4(current_cr3) };
+			p.brk = current_brk + nb_pages * PAGE_SIZE as u64;
+			return p.brk as i64;
+		}).unwrap_or_else(|| neg(KernelErrors::ENOMEM))
+	} else {
+		return neg(KernelErrors::ENOMEM);
+	}
+}
+
+pub fn sys_chdir(path_ptr: u64) -> i64 {
+	let path_bytes = match copy_user_cstr(path_ptr, MAX_PATH) {
+		Ok(b) => b,
+		Err(e) => return e,
+	};
+	let path = match str::from_utf8(&path_bytes) {
+		Ok(s) => s,
+		Err(_) => return neg(KernelErrors::EINVAL),
+	};
+
+	klog!("chdir got path: {}", path);
+	let cwd = process::get_cwd();
+
+	let dir = match vfs::lookup(path, cwd) {
+		Ok(d) => d,
+		Err(_) => return neg(KernelErrors::ENOENT),
+	};
+	if dir.inode.is_dir() {
+		process::set_cwd(dir);
+		return 0;
+	} else {
+		return neg(KernelErrors::ENOTDIR);
+	}
+}
+
+pub fn sys_getdents(fd: u64, dirp: u64, count: u64) -> i64 {
+	if count == 0 {
+		return neg(KernelErrors::EINVAL);
+	}
+	let mut list: Vec<u8> = Vec::new();
+	with_current_process(|proc| {
+		let file = proc.fd_table[fd as usize].as_mut()?;
+		let mut idx = file.offset;
+
+		if !file.inode.is_dir() { return Some(neg(KernelErrors::ENOTDIR));}
+
+		while let Ok(Some(entry)) = file.inode.clone().readdir(idx) {
+			let reclen = (19 + entry.name.len() + 1).next_multiple_of(8);
+			if list.len() + reclen as usize > count as usize {
+				if list.len() == 0 {
+					return Some(neg(KernelErrors::EINVAL));
+				}
+				break;
+			}
+
+			let start = list.len();
+			list.resize(start + reclen, 0);
+			let rec = &mut list[start..];
+			rec[0..8].copy_from_slice(&entry.ino.to_le_bytes());
+			rec[8..16].copy_from_slice(&(idx + 1).to_le_bytes());
+			rec[16..18].copy_from_slice(&(reclen as u16).to_le_bytes());
+			rec[18] = if entry.is_dir { 4 } else { 8 };
+			rec[19..19 + entry.name.len()].copy_from_slice(entry.name.as_bytes());
+			idx += 1;
+		}
+		
+		copy_to_user(dirp, &list).ok()?;
+		file.offset = idx;
+		Some(list.len() as i64)
+	}).unwrap_or_else(|| Some(neg(KernelErrors::EINVAL))).unwrap_or(neg(KernelErrors::EINVAL))
+	
 }

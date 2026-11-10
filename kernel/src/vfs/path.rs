@@ -13,7 +13,6 @@ pub fn path_walk(path: &str, root_dentry: Arc<VfsDentry>, cwd_dentry: Arc<VfsDen
 	} else {
 		cwd_dentry
 	};
-
 	let bytes = path.as_bytes();
 	let len = bytes.len();
 	let mut idx = 0;
@@ -74,7 +73,7 @@ pub fn path_parent(path: &str) -> Result<&str, KernelErrors> {
 			Ok(&path[..idx])
 		}
 		None => {
-			Err(KernelErrors::EINVAL)
+			Ok(".")
 		}
 	}
 }
@@ -105,5 +104,13 @@ pub fn path_basename(path: &str) -> Result<&str, KernelErrors> {
 		Err(KernelErrors::EINVAL)
 	} else {
 		Ok(component)
+	}
+}
+
+pub fn is_absolute(path: &str) -> bool {
+	if path.starts_with("/"){
+		true
+	} else {
+		false
 	}
 }

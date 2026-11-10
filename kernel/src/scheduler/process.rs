@@ -1,9 +1,10 @@
 
 use core::sync::atomic::AtomicU32;
 
+use alloc::sync::Arc;
 use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
 
-use crate::{arch::x86_64::{asm::current_cr3, gdt::set_tss_rsp0, paging::{duplicate_user_address_space, free_page_table, map_phys_page, new_page_table, switch_pml4}, syscall::{SyscallFrame, fork_child_return}}, elf::load_elf, errno::KernelErrors, klog, ksprint, memory::{KERNEL_DYNAMIC_MEM_START, PAGE_SIZE, USER_RANGE_END, allocate_n_pages, pmm::{KERNEL_FRAME_ALLOCATOR, PhysAllocator, get_used_frames}}, scheduler::{CURRENT_KSTACK_TOP, MAX_PROCESS, PROCESS_TABLE, Priority, exit_to_user}, vfs::file::VfsFile};
+use crate::{arch::x86_64::{asm::current_cr3, gdt::set_tss_rsp0, paging::{duplicate_user_address_space, free_page_table, map_phys_page, new_page_table, switch_pml4}, syscall::{SyscallFrame, fork_child_return}}, elf::load_elf, errno::KernelErrors, klog, ksprint, memory::{KERNEL_DYNAMIC_MEM_START, PAGE_SIZE, USER_HEAP_START, USER_RANGE_END, allocate_n_pages, pmm::{KERNEL_FRAME_ALLOCATOR, PhysAllocator, get_used_frames}}, scheduler::{CURRENT_KSTACK_TOP, CURRENT_PID, MAX_PROCESS, PROCESS_TABLE, Priority, exit_to_user}, vfs::{self, dentry::VfsDentry, file::VfsFile, inode::Inode}};
 
 pub type ProcessId = u32;
 pub static NEXT_PID: AtomicU32 = AtomicU32::new(10);
@@ -51,7 +52,7 @@ impl CpuContext {
 	}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Process {
 	pub pid: ProcessId,
 	pub ppid: ProcessId,
@@ -68,7 +69,10 @@ pub struct Process {
 	pub fd_table: [Option<VfsFile>; MAX_FD_PER_PROCESS],
 	pub fork_resume_frame: Option<SyscallFrame>,
 	pub exit_code: u32,
-	pub blocked_by: Option<BlockedBy>
+	pub blocked_by: Option<BlockedBy>,
+	pub heap_start: u64,
+	pub brk: u64,
+	pub cwd: Option<Arc<VfsDentry>>,
 }
 
 
@@ -137,6 +141,8 @@ impl Process {
 		}
 		let fd_table = [const {None}; MAX_FD_PER_PROCESS];
 
+		let root_ino = crate::vfs::lookup("/", None).ok();
+
 		Self {
 			pid,
 			ppid,
@@ -154,6 +160,9 @@ impl Process {
 			fork_resume_frame: None,
 			exit_code: 0,
 			blocked_by: None,
+			heap_start: USER_HEAP_START,
+			brk: USER_HEAP_START,
+			cwd: root_ino,
 		}
 	}
 
@@ -194,6 +203,9 @@ impl Process {
 			fork_resume_frame: None,
 			exit_code: 0,
 			blocked_by: None,
+			heap_start: 0,
+			brk: 0,
+			cwd: None,
 		}
 	}
 
@@ -261,6 +273,9 @@ pub fn fork_child_from(parent: &Process, frame: &SyscallFrame) -> Result<Process
 			fork_resume_frame: Some(*frame),
 			exit_code: 0,
 			blocked_by: None,
+			heap_start: parent.heap_start,
+			brk: parent.brk,
+			cwd: parent.cwd.clone(),
 		}
 	)
 
@@ -305,6 +320,8 @@ pub fn exec_replace_image(process: &mut Process, elf_bytes: &[u8]) -> Result<u64
 	process.cr3 = new_cr3_frame.start_address().as_u64();
 	process.rsp = user_rsp;
 	process.fork_resume_frame = None;
+	process.brk = USER_HEAP_START;
+	process.heap_start = USER_HEAP_START;
 	(process.krsp, process.kstack_top) = kernel_stack_bootstrap(user_rsp, entry, exit_to_user as *const () as u64);
 	set_tss_rsp0(VirtAddr::new(process.kstack_top));
 	CURRENT_KSTACK_TOP.store(process.kstack_top, core::sync::atomic::Ordering::Release);
@@ -433,4 +450,26 @@ pub fn reap(pid: ProcessId) {
 	let freed = used_before - used_after;
 	klog!("Reap freed {} frames", freed);
 	drop(pt);
+}
+
+pub fn get_cwd() -> Option<Arc<VfsDentry>>{
+	let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed);
+
+	let pt = PROCESS_TABLE.lock();
+	if current_pid > pt.len() as u32 {
+		return None;
+	}
+	if let Some(proc) = pt[current_pid as usize].as_ref() {
+		proc.cwd.clone()
+	} else {
+		None
+	}
+}
+
+pub fn set_cwd(cwd: Arc<VfsDentry>){
+	let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed);
+	let mut pt = PROCESS_TABLE.lock();
+	if let Some(proc) = pt[current_pid as usize].as_mut() {
+		proc.cwd = Some(cwd);
+	}
 }

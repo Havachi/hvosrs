@@ -30,12 +30,16 @@ const fn make_table() -> [SyscallFn; NR_SYSCALLS] {
 	t[SYS_OPEN] = |_, path, flags, mode, _, _, _| sys_open(path, flags, mode);
 	t[SYS_CLOSE] = |_, fd, _, _, _, _, _| sys_close(fd as i32);
 	t[SYS_LSEEK] = |_, fd, offset, whence, _, _, _| sys_lseek(fd as i32, offset as i64, whence as i32);
+	t[SYS_BRK] = |_,addr,_,_,_,_,_| sys_brk(addr);
 	t[SYS_GETPID] = |_,_,_,_,_,_,_|  sys_getpid();
 	t[SYS_FORK] = |_,_,_,_,_,_,f| sys_fork(f);
 	t[SYS_EXECVE] = |_,path,argv,envp,_,_,f| sys_execve(path, argv, envp, f);
 	t[SYS_EXIT] = |_,code,_,_,_,_,_| sys_exit(code);
+	t[SYS_GETDENTS] = |_,fd,dirp,count,_,_,_| sys_getdents(fd, dirp, count);
+	t[SYS_CHDIR] = |_,path,_,_,_,_,_| sys_chdir(path);
 	t[SYS_MKDIR] = |_,path,_,_,_,_,_| sys_mkdir(path);
 	t[SYS_WAITID] = |_,idtype,id,infop,option,_,f| sys_waitid(idtype, id, infop, option, f);
+	t[SYS_OPENAT] = |_,dfd, path_ptr, flags, mode, _,_| sys_openat(dfd, path_ptr, flags, mode);
 	t
 }
 
