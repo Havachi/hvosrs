@@ -70,9 +70,12 @@ impl KernelConsole {
 					self.ansi_arg_len = 0;
 				} else if c == b'\n' {
 					self.new_line();
+				}  else if c == 0x08 {
+					self.backspace();
 				} else if c < 0x20 || c == 0x7f {
 				} else {
 					let font_size = self.output.character_size();
+					self.output.clear_char_cell(self.col, self.line);
 					let pos = Point {
 						x: ((self.col * font_size.width) as i32),
 						y: ((self.line * font_size.height) as i32)
@@ -121,6 +124,15 @@ impl KernelConsole {
 			b'm' => {
 				self.apply_sgr(args);
 			}
+			b'C' => {
+				let n = Self::csi_count(args);
+				let next = self.col as u64 + n as u64;
+				self.col = next.min(self.max_col) as u32;
+			}
+			b'D' => {
+				let n = Self::csi_count(args);
+				self.col = self.col.saturating_sub(n).max(1);
+			}
 			b'H' => {
 				let mut c = 1;
 				let mut l = 1;
@@ -141,6 +153,20 @@ impl KernelConsole {
 			}
 			_ => {}
 		}
+	}
+
+	fn csi_count(args: &[u8]) -> u32 {
+		let mut n: u32 = 0;
+		let mut seen = false;
+		for &b in args {
+			if b.is_ascii_digit() {
+				seen = true;
+				n = n.saturating_mul(10).saturating_add((b - b'0') as u32);
+			} else {
+				break;
+			}
+		}
+		if !seen || n == 0 { 1 } else { n }
 	}
 
 	fn apply_sgr(&mut self, args: &[u8]) {
@@ -196,6 +222,11 @@ impl KernelConsole {
 	}
 
 	pub fn backspace(&mut self) {
+		if self.col <= 1 {
+			return;
+		}
+		self.col -= 1;
+		self.output.clear_char_cell(self.col, self.line);
 	}
 	
 	pub fn tab(&mut self) {

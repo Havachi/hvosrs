@@ -3,7 +3,7 @@ pub mod key;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
-use crate::{drivers::{io::STDIN_BUFFER, keyboard::key::{KeyCode, map_scancode}}, errno::KernelErrors, klog, scheduler::unblock_stdin};
+use crate::{drivers::{io::STDIN_BUFFER, keyboard::key::{KeyCode, map_extended_scancode, map_scancode}}, errno::KernelErrors, klog, scheduler::unblock_stdin};
 
 pub static KEYBOARD: Mutex<KeyboardState> = Mutex::new(KeyboardState::new());
 
@@ -49,16 +49,36 @@ pub fn handle_scancode(scancode: u8) -> Result<(), KernelErrors> {
 				KeyCode::LShift | KeyCode::RShift		=> kbd.shift_pressed = true, 
 				KeyCode::LControl | KeyCode::RControl	=> kbd.ctrl_pressed = true,
 				KeyCode::LAlt							=> kbd.alt_pressed = true,
-				_ => {
-					let c = kbd.to_ascii(keyevent.key);
+				key => {
 					let mut stdin_buffer = STDIN_BUFFER.lock();
-					stdin_buffer.push(c as u8)?;
-					unblock_stdin();
+					if let Some(seq) = arrow_sequence(key) {
+						for b in seq {
+							stdin_buffer.push(b)?;
+						}
+						unblock_stdin();
+					} else {
+						let c = kbd.to_ascii(key);
+						if c != '\0' {
+							stdin_buffer.push(c as u8)?;
+							unblock_stdin();
+						}
+					}
 				}
 			}
 		}
 	}
 	Ok(())
+}
+
+fn arrow_sequence(key: KeyCode) -> Option<[u8; 3]> {
+	let last = match key {
+		KeyCode::ArrowUp => b'A',
+		KeyCode::ArrowDown => b'B',
+		KeyCode::ArrowRight => b'C',
+		KeyCode::ArrowLeft => b'D',
+		_ => return None,
+	};
+	Some([0x1B, b'[', last])
 }
 
 
@@ -69,22 +89,35 @@ pub struct KeyboardState {
 	pub caps_locked: bool,
 	pub num_locked: bool,
 	pub scroll_locked: bool,
+	pub extended: bool,
 }
 
 impl KeyboardState {
 	pub const fn new() -> Self {
-		Self { shift_pressed: false, ctrl_pressed: false, alt_pressed: false, caps_locked: false, num_locked: false, scroll_locked: false }
+		Self {
+			shift_pressed: false, ctrl_pressed: false,
+			alt_pressed: false, caps_locked: false,
+			num_locked: false, scroll_locked: false,
+			extended: false,
+		}
 	}
 
 	pub fn process_scancode(&mut self, scancode: u8) -> Option<KeyEvent> {
+		if scancode == 0xE0 {
+			self.extended = true;
+			return None;
+		}
 		let is_released = (scancode & 0x80) != 0;
 		let base_code = scancode & 0x7F;
 		let state = if is_released { KeyState::Released } else { KeyState::Pressed };
-		if let Some(key) = map_scancode(base_code) {
-			Some(KeyEvent { key, state })
+		let extended = self.extended;
+		self.extended = false;
+		let key = if extended {
+			map_extended_scancode(base_code)?
 		} else {
-			None
-		}
+			map_scancode(base_code)?
+		};
+		Some(KeyEvent { key, state })
 	}
 
 	fn to_ascii(&self, base_code: KeyCode) -> char {
@@ -150,13 +183,15 @@ impl KeyboardState {
 			KeyCode::NumpadSubstract => '-',
 			KeyCode::NumpadAdd => '+',
 			KeyCode::NumpadEnter => '\n',
-			KeyCode::Numpad0 => if self.num_locked {'0'} else {'\0'},
+			KeyCode::Numpad0 => '0',
 			KeyCode::Numpad1 => if self.num_locked {'1'} else {'\0'},
 			KeyCode::Numpad2 => if self.num_locked {'2'} else {'\0'},
 			KeyCode::Numpad3 => if self.num_locked {'3'} else {'\0'},
 			KeyCode::Numpad4 => if self.num_locked {'4'} else {'\0'},
 			KeyCode::Numpad5 => if self.num_locked {'5'} else {'\0'},
+
 			KeyCode::Numpad6 => if self.num_locked {'6'} else {'\0'},
+			
 			KeyCode::Numpad7 => if self.num_locked {'7'} else {'\0'},
 			KeyCode::Numpad8 => if self.num_locked {'8'} else {'\0'},
 			KeyCode::Numpad9 => if self.num_locked {'9'} else {'\0'},
@@ -168,7 +203,6 @@ impl KeyboardState {
 			KeyCode::Return => '\n',
 			KeyCode::Tab => '\t',
 			KeyCode::Oem5 => '\0',
-
 			_ => '\0',
 		}
 	}

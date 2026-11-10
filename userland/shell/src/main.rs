@@ -3,48 +3,102 @@
 
 use core::sync::atomic::AtomicI64;
 
-use alloc::{string::String, vec::Vec};
+use alloc::{string::{String, ToString}, vec::Vec};
 use uhv::*;
 extern crate alloc;
 pub static SHELL_STATUS: AtomicI64 = AtomicI64::new(0);
+
+fn move_left(n: usize) {
+	if n == 0 {
+		return;
+	}
+	let mut digits = [0u8; 10];
+	let mut v = n;
+	let mut i = digits.len();
+	while v > 0 {
+		i -= 1;
+		digits[i] = b'0' + (v % 10) as u8;
+		v /= 10;
+	}
+	let digits = &digits[i..];
+	let mut seq = [0u8; 16];
+	seq[0] = 0x1b;
+	seq[1] = b'[';
+	seq[2..2 + digits.len()].copy_from_slice(digits);
+	let end = 2 + digits.len();
+	seq[end] = b'D';
+	write(1, &seq[..=end]);
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
 	let mut env = Env::default();
 	env.pwd = String::from("/");
 
-	//test
-	let f = open(b"/", 0o000200000);
-	if f < 0 {
-		println!("open on / return -> {}", errno_to_str(f));
-	} else {
-		println!("opened a dir ! FD: {f}")
-	}
+	let mut history: Vec<String> = Vec::new();
+	let mut line_buffer = Vec::with_capacity(1024);
+	let mut cursor = 0usize;
 
-
-
-	let mut buf = Vec::with_capacity(1024);
     print!("-> {} > ", env.pwd);
 	loop {
 		let mut c = getchar();
 		while c != b'\n' {
-			write(1, &[c]);
-			buf.push(c);
+			if c == 0x1B {//Handle extended codes
+				let bracket = getchar();
+				let dir = getchar();
+				if bracket == b'[' {
+					if dir == b'D' && cursor > 0 {
+						cursor -= 1;
+						write(1, b"\x1b[D");
+					} else if dir == b'C' && cursor < line_buffer.len() {
+						cursor += 1;
+						write(1, b"\x1b[C");
+					}
+				}
+			
+			} else if c == 0x08 { //Handle Backspace
+				if cursor > 0 {
+					line_buffer.remove(cursor - 1);
+					cursor -= 1;
+					write(1, b"\x1b[D");
+					write(1, &line_buffer[cursor..]);
+					write(1, b" ");
+					move_left(line_buffer.len() - cursor + 1);
+				}
+			} else if c != b'\0' {//Handle any other characters
+				if cursor < line_buffer.len() {
+					line_buffer.insert(cursor, c);
+				} else {
+					line_buffer.push(c);
+				}
+				write(1, &line_buffer[cursor..]);
+				move_left(line_buffer.len() - cursor - 1);
+				cursor += 1;
+			}
 			c = getchar();
 		}
+		
+		let line = str::from_utf8(&line_buffer).unwrap_or("");
+		history.push(line.to_string());
 		println!();
-		let res = repl(&mut env, &buf);
+		let res = repl(&mut env, &line_buffer);
+
 		match res {
 			Ok(_) => {
 				SHELL_STATUS.store(0, core::sync::atomic::Ordering::Relaxed);
 			},
 			Err(e) => {
-				eprintln!("err: {}", errno_to_str(e));
+				if e == 127 {
+					
+				} else {
+					eprintln!("err: {}", errno_to_str(e));
+				}
 				SHELL_STATUS.store(e, core::sync::atomic::Ordering::Relaxed);
 			},
 		}
 		print!("-> {} > ", env.pwd);
-		buf.clear();
+		line_buffer.clear();
+		cursor = 0;
 	}
 	exit(42);
 	loop {

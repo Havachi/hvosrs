@@ -96,9 +96,21 @@ pub enum KeyCode {
 	ArrowRight,
 	Numpad0,
 	NumpadPeriod,
+
 	Unknown,
+	Extend = 0xE0,
 }
 
+
+pub fn map_extended_scancode(code: u8) -> Option<KeyCode> {
+	match code {
+		0x48 => Some(KeyCode::ArrowUp),
+		0x50 => Some(KeyCode::ArrowDown),
+		0x4B => Some(KeyCode::ArrowLeft),
+		0x4D => Some(KeyCode::ArrowRight),
+		_ => None,
+	}
+}
 
 pub fn map_scancode(code: u8) -> Option<KeyCode> {
 	match code {

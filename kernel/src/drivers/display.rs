@@ -90,6 +90,27 @@ impl KernelDisplay {
 		self.font.character_size
 	}
 
+	/// Clear one character cell at the same origin `write_str` uses.
+	/// The point passed to text is the baseline, so the cell starts `baseline` pixels above `row * height`.
+	pub fn clear_char_cell(&mut self, col: u32, row: u32) {
+		let fs = self.character_size();
+		let x0 = col as i64 * fs.width as i64;
+		let y0 = row as i64 * fs.height as i64 - self.font.baseline as i64;
+		let bg = color_to_u32(self.bg_color);
+		for gy in 0..fs.height as i64 {
+			for gx in 0..fs.width as i64 {
+				let x = x0 + gx;
+				let y = y0 + gy;
+				if x < 0 || y < 0 || x as u64 >= self.width || y as u64 >= self.height {
+					continue;
+				}
+				unsafe {
+					self.pixel_ptr(x as u64, y as u64).write_volatile(bg);
+				}
+			}
+		}
+	}
+
 	/// Draw one ASCII byte into the framebuffer (syscall-safe; no full-FB slice).
 	#[inline(never)]
 	pub fn draw_ascii_byte(&mut self, c: u8, col: u32, row: u32) {
