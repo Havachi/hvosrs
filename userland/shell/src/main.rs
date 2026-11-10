@@ -34,8 +34,8 @@ fn move_left(n: usize) {
 pub extern "C" fn _start() -> ! {
 	let mut env = Env::default();
 	env.pwd = String::from("/");
+	env.history = Vec::new();
 
-	let mut history: Vec<String> = Vec::new();
 	let mut line_buffer = Vec::with_capacity(1024);
 	let mut cursor = 0usize;
 
@@ -79,7 +79,7 @@ pub extern "C" fn _start() -> ! {
 		}
 		
 		let line = str::from_utf8(&line_buffer).unwrap_or("");
-		history.push(line.to_string());
+		env.history.push(line.to_string());
 		println!();
 		let res = repl(&mut env, &line_buffer);
 
@@ -112,18 +112,18 @@ fn repl(env: &mut Env, buf: &Vec<u8>) -> Result<(), i64> {
 	}
 	let (cmd, args) = split_cmd(buf)?;
 	match cmd.as_str() {
-		"exit" => {
-			exit(0);
-		}
+		"exit" => exit(0),
 		"pwd" => pwd(env)?,
 		"cd" => cd(env, &args)?,
 		"ls" => ls(env, &args)?,
+		"mkdir" => mkdir_wrapper(&args)?,
+		"history" => history(env),
+		"help" => help(),
 		_ => {
 			eprintln!("shell: command not found: {}", cmd);
 			return Err(127)
 		}
 	}
-
 	Ok(())
 }
 
@@ -201,7 +201,39 @@ fn ls(env: &mut Env, arg: &Vec<String>) -> Result<(), i64> {
 }
 
 
+fn mkdir_wrapper(arg: &Vec<String>) -> Result<(), i64> {
+	if arg.len() < 2 {
+		return Err(-22);
+	}
+	let ret = mkdir(arg[1].as_str());
+	if ret < 0 {
+		return Err(ret);
+	} 
+	Ok(())
+}
+
+fn history(env: &Env) {
+	if env.history.len() == 0 {
+		println!("history is empty");
+		return;
+	}
+	for (i, line) in env.history.iter().enumerate() {
+		println!("{} {}", i, line);
+	}
+}
+
+fn help() {
+	println!("command available:");
+	println!("cd <dir>\t| Change directory");
+	println!("exit\t\t| Exit current program");
+	println!("help\t\t| This");
+	println!("history\t| Display command history");
+	println!("ls [dir]\t| List file and directories");
+	println!("pwd\t\t| Show current directory");
+}
+
 #[derive(Debug, Default)]
 pub struct Env {
 	pub pwd: String,
+	pub history: Vec<String>,
 }

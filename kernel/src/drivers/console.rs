@@ -70,7 +70,9 @@ impl KernelConsole {
 					self.ansi_arg_len = 0;
 				} else if c == b'\n' {
 					self.new_line();
-				}  else if c == 0x08 {
+				}  else if c == b'\t' {
+					self.tab();
+				} else if c == 0x08 {
 					self.backspace();
 				} else if c < 0x20 || c == 0x7f {
 				} else {
@@ -230,7 +232,10 @@ impl KernelConsole {
 	}
 	
 	pub fn tab(&mut self) {
-		let c = self.col.next_multiple_of(8);
+		let mut c = self.col.next_multiple_of(8);
+		if c == self.col {
+			c = (c + 1).next_multiple_of(8);
+		}
 		if c > self.max_col as u32 {
 			self.new_line();
 		} else {
