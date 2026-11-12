@@ -1,0 +1,14 @@
+pub const SYS_READ: u64 = 0;
+pub const SYS_WRITE: u64 = 1;
+pub const SYS_OPEN: u64 = 2;
+pub const SYS_CLOSE: u64 = 3;
+pub const SYS_LSEEK: u64 = 4;
+pub const SYS_BRK: u64 = 12;
+pub const SYS_GETPID: u64 = 39;
+pub const SYS_FORK: u64 = 57;
+pub const SYS_EXECVE: u64 = 59;
+pub const SYS_EXIT: u64 = 60;
+pub const SYS_GETDENTS: u64 = 78;
+pub const SYS_CHDIR: u64 = 80;
+pub const SYS_MKDIR: u64 = 83;
+pub const SYS_WAITID: u64 = 247;
