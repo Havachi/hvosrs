@@ -1,6 +1,6 @@
 use spin::Mutex;
 
-use crate::{errno::KernelErrors, klog, structures::buffers::CircularBuffer};
+use crate::{errno::KernelErrors, structures::buffers::CircularBuffer};
 
 pub static STDIN_BUFFER: Mutex<CircularBuffer<u8,128>> = Mutex::new(CircularBuffer::new());
 

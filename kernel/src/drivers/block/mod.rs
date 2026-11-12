@@ -1,7 +1,8 @@
 
+use alloc::format;
 use spin::Mutex;
 
-use crate::{drivers::block::{ahci::AhciDevice, atapio::AtaPioDevice}, kerror, klog};
+use crate::{drivers::block::{ahci::AhciDevice, atapio::AtaPioDevice}, errno::KernelErrors, kerror, klog, vfs};
 
 pub mod ahci;
 pub mod nvme;
@@ -45,6 +46,18 @@ impl DeviceManager {
 		}
 		self.devices[self.count] = Some(RegisteredDevice { name, device });
 		self.count += 1;
+		Ok(())
+	}
+	//To be run after VFS is inited
+	pub fn register_in_vfs(&self) -> Result<(), KernelErrors> {
+		for device in self.devices.as_ref() {
+			if let Some(dev) = device {
+				if let Ok(dev_name) = str::from_utf8(&dev.name) {
+					let path = format!("/dev/{}", dev_name);
+					vfs::create(path.as_str())?;
+				}
+			}
+		}
 		Ok(())
 	}
 

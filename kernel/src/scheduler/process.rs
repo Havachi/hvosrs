@@ -4,7 +4,24 @@ use core::sync::atomic::AtomicU32;
 use alloc::sync::Arc;
 use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
 
-use crate::{arch::x86_64::{asm::current_cr3, gdt::set_tss_rsp0, paging::{duplicate_user_address_space, free_page_table, map_phys_page, new_page_table, switch_pml4}, syscall::{SyscallFrame, fork_child_return}}, elf::load_elf, errno::KernelErrors, klog, ksprint, memory::{KERNEL_DYNAMIC_MEM_START, PAGE_SIZE, USER_HEAP_START, USER_RANGE_END, allocate_n_pages, pmm::{KERNEL_FRAME_ALLOCATOR, PhysAllocator, get_used_frames}}, scheduler::{CURRENT_KSTACK_TOP, CURRENT_PID, MAX_PROCESS, PROCESS_TABLE, Priority, exit_to_user}, vfs::{self, dentry::VfsDentry, file::VfsFile, inode::Inode}};
+use crate::{arch::x86_64::{
+	asm::current_cr3,
+	gdt::set_tss_rsp0,
+	paging::{
+		duplicate_user_address_space,
+		free_page_table,
+		map_phys_page,
+		new_page_table,
+		switch_pml4
+	},
+	syscall::{SyscallFrame, fork_child_return}},
+	elf::load_elf,
+	errno::KernelErrors, klog, ksprint,
+	memory::{KERNEL_DYNAMIC_MEM_START, PAGE_SIZE, USER_HEAP_START, USER_RANGE_END, allocate_n_pages,
+	pmm::{KERNEL_FRAME_ALLOCATOR, PhysAllocator, get_used_frames}},
+	scheduler::{CURRENT_KSTACK_TOP, CURRENT_PID, MAX_PROCESS, PROCESS_TABLE, Priority, exit_to_user},
+	vfs::{dentry::VfsDentry, file::VfsFile}
+};
 
 pub type ProcessId = u32;
 pub static NEXT_PID: AtomicU32 = AtomicU32::new(10);

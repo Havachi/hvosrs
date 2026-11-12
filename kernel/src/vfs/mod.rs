@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
-use crate::{errno::KernelErrors, fs::{self, ramfs::RAMFS_NAME}, kerror, klog, ksprint, scheduler::process::get_cwd, vfs::{dentry::VfsDentry, file::{VfsFile, VfsFileOpenflags}, filesystem::FST_REG, inode::NEXT_INO, path::{path_basename, path_parent, path_walk}}};
+use crate::{drivers::block::DEV_MGR, errno::KernelErrors, fs::{self, ramfs::RAMFS_NAME}, kerror, klog, scheduler::process::get_cwd, vfs::{dentry::VfsDentry, file::{VfsFile, VfsFileOpenflags}, filesystem::FST_REG, inode::NEXT_INO, path::{path_basename, path_parent, path_walk}}};
 
 static ROOT_DENTRY: Mutex<Option<Arc<VfsDentry>>> = Mutex::new(None);
 pub const MAX_EXEC_IMAGE: usize = 16 * 1024 * 1024;
@@ -16,6 +16,11 @@ pub mod path;
 
 pub type InodeId = u64;
 
+pub enum SeekOrigin {
+	SeekSet,
+	SeekCur,
+	SeekEnd,
+}
 
 pub fn init() {
 	fs::init();
@@ -30,6 +35,12 @@ pub fn init() {
 	if let Err(e) = mkdir("/bin") {
 		kerror!("Error while creating fs layout: {:?}", e)
 	}
+	if let Err(e) = mkdir("/dev") {
+		kerror!("Error while creating fs layout: {:?}", e)
+	}
+
+	let dev_mgr = DEV_MGR.lock();
+	let _ = dev_mgr.register_in_vfs();
 	klog!("VFS init done");
 }
 
@@ -68,7 +79,6 @@ pub fn create(path: &str) -> Result<(), KernelErrors> {
 	parent_dentry.inode.clone().create(basename)
 }
 
-
 pub fn open(path: &str, flags: u32) -> Result<VfsFile, KernelErrors> {
 	let vfs_flags = VfsFileOpenflags::from_bits_truncate(flags);
 	let dentry = match lookup(path, get_cwd()) {
@@ -106,7 +116,6 @@ pub fn open(path: &str, flags: u32) -> Result<VfsFile, KernelErrors> {
 		VfsFile::new(dentry.inode.clone(), 0, vfs_flags)
 	)
 }
-
 
 pub fn read(file: &mut VfsFile, buf: &mut [u8]) -> Result<usize, KernelErrors> {
 
@@ -154,13 +163,6 @@ pub fn seek(file: &mut VfsFile, offset: u64, origin: SeekOrigin) -> Result<u64, 
 		},
 	}
 	Ok(file.offset)
-}
-
-
-pub enum SeekOrigin {
-	SeekSet,
-	SeekCur,
-	SeekEnd,
 }
 
 pub fn read_file_all(file: &mut VfsFile) -> Result<Vec<u8>, KernelErrors> {

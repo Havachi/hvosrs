@@ -73,7 +73,6 @@ pub unsafe extern "C" fn fork_child_return() -> ! {
 		frame
 	};
 	unsafe { resume_syscall_frame(&frame) }
-	unreachable!()
 }
 
 

@@ -3,6 +3,7 @@ use alloc::boxed::Box;
 use crate::{fs::ramfs::RamFs, kerror, klog, vfs::filesystem::vfs_register_filesystem};
 
 pub mod ramfs;
+pub mod dirent;
 
 pub fn init() {
 

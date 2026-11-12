@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::{errno::KernelErrors::{self, EINVAL}, kerror, klog, ksprint, vfs::dentry::VfsDentry};
+use crate::{errno::KernelErrors::{self, EINVAL}, vfs::dentry::VfsDentry};
 
 
 pub fn path_walk(path: &str, root_dentry: Arc<VfsDentry>, cwd_dentry: Arc<VfsDentry>) -> Result<Arc<VfsDentry>, KernelErrors> {

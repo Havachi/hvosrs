@@ -4,7 +4,7 @@ use core::ptr::NonNull;
 use talc::{TalcLock, base::Talc};
 use x86_64::{VirtAddr, structures::paging::{FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB}};
 
-use crate::{arch::x86_64::paging::KERNEL_MAPPER, errno::KernelErrors, kerror, klog, memory::{PAGE_SIZE, pmm::KERNEL_FRAME_ALLOCATOR}};
+use crate::{arch::x86_64::paging::KERNEL_MAPPER, kerror, klog, memory::{PAGE_SIZE, pmm::KERNEL_FRAME_ALLOCATOR}};
 
 const KERNEL_HEAP_START: VirtAddr = VirtAddr::new(0xFFFF_9000_0000_0000);
 

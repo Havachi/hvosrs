@@ -8,8 +8,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use crate::{
-	drivers::block::DeviceManager,
-	kerror, memory::mmio::mmio_alloc,
+	drivers::block::DeviceManager, kerror, memory::mmio::mmio_alloc, vfs,
 };
 
 pub use driver::NvmeDriver;

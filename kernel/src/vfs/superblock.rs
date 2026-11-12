@@ -1,4 +1,6 @@
-use crate::vfs::{dentry::VfsDentry, inode::VfsInode};
+use alloc::sync::Arc;
+
+use crate::{errno::KernelErrors, vfs::{dentry::VfsDentry, inode::{Inode, VfsInode}}};
 
 
 pub struct VfsSuperblock {
@@ -9,6 +11,12 @@ pub struct VfsSuperblock {
 
 }
 
+pub trait SuperOperation {
+	fn alloc_inode(&mut self) -> Result<Option<Arc<dyn Inode>>, KernelErrors>;
+	fn destroy_inode(&mut self, inode: Arc<dyn Inode>) -> Result<(), KernelErrors>;
+	fn free_inode(&mut self, inode: Arc<dyn Inode>) -> Result<(), KernelErrors>;
+	fn dirty_inode(&mut self, inode: Arc<dyn Inode>) -> Result<(), KernelErrors>;
+}
 
 impl VfsSuperblock {
 	pub fn alloc_inode(&mut self) {}

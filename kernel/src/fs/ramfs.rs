@@ -2,7 +2,7 @@ use core::{cmp::min, sync::atomic::AtomicUsize};
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use spin::Mutex;
-use crate::{errno::KernelErrors::{self, EEXIST, EINVAL, ENOTDIR}, kerror, klog, vfs::{self, InodeId, dentry::{VfsDentry, VfsDirent}, filesystem::VfsFilesystem, inode::{Inode, VfsInodeType::{self, Dir, File}}, next_inode_id}};
+use crate::{errno::KernelErrors::{self, EEXIST, EINVAL, ENOTDIR}, vfs::{InodeId, dentry::{VfsDentry, VfsDirent}, filesystem::VfsFilesystem, inode::{Inode, VfsInodeType}, next_inode_id}};
 
 pub type RamfsDir = BTreeMap<Box<str>, Arc<RamFsInode>>;
 pub type RamfsFile = Vec<u8>;
@@ -24,7 +24,7 @@ impl RamFsInode {
 		Arc::new(
 				Self {
 				id: 0,
-				vtype: Dir,
+				vtype: VfsInodeType::Dir,
 				size: AtomicUsize::new(0),
 				dir: Some(Mutex::new(RamfsDir::new())),
 				file:None,
@@ -37,7 +37,7 @@ impl RamFsInode {
 		Arc::new(
 			Self {
 				id,
-				vtype: Dir,
+				vtype: VfsInodeType::Dir,
 				size: AtomicUsize::new(0),
 				dir: Some(Mutex::new(RamfsDir::new())),
 				file: None,
@@ -49,7 +49,7 @@ impl RamFsInode {
 		Arc::new(
 			Self {
 				id,
-				vtype: File,
+				vtype: VfsInodeType::File,
 				size: AtomicUsize::new(0),
 				dir: None,
 				file: Some(Mutex::new(Vec::<u8>::new())),
@@ -85,10 +85,10 @@ impl Inode for RamFsInode {
 	}
 
 	fn is_dir(&self) -> bool {
-		self.vtype == Dir
+		self.vtype == VfsInodeType::Dir
 	}
 	fn is_file(&self) -> bool {
-		self.vtype == File
+		self.vtype == VfsInodeType::File
 	}
 	fn id(&self) -> InodeId {
 		self.id

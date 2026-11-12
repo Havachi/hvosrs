@@ -1,7 +1,7 @@
 use limine::memmap::*;
 use spin::Mutex;
 use x86_64::{PhysAddr, structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame, Size4KiB, frame}};
-use crate::{kerror, kpanic, ksprint, memory::{PAGE_SIZE, allocate_n_pages}};
+use crate::{kerror, kpanic, ksprint, memory::PAGE_SIZE};
 
 //Whole bitmap can cover 256Gio
 const BITMAP_LEN: usize = 1024 * 1024;

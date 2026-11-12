@@ -75,13 +75,6 @@ pub trait VfsFilesystem: Sync + Send {
 	fn mount(&self, path: &str) -> Result<VfsDentry, KernelErrors>;
 }
 
-pub struct VfsFileSystemType {
-	id: u32,
-	name: &'static str,
-	fs: dyn VfsFilesystem,
-}
-
-
 pub fn vfs_register_filesystem(fs_type: &'static dyn VfsFilesystem) -> Result<(), &'static str>{
 	let mut reg = FST_REG.lock();
 	let name = fs_type.get_name();

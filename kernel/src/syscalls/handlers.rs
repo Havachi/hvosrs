@@ -5,8 +5,8 @@ use alloc::vec::Vec;
 use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
 
 use crate::{
-	arch::x86_64::{paging::{map_phys_page, switch_pml4}, syscall::SyscallFrame}, drivers::{console, io::getchar, serial}, errno::KernelErrors::{self, EAGAIN}, klog, memory::{PAGE_SIZE, USER_HEAP_RANGE, pmm::PhysAllocator}, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, block_current, process::{self, find_zombie, fork_child_from, has_waitable_child, reap}, schedule, with_current_process}, syscalls::{
-		errno::EFAULT, user_access::{copy_from_user, copy_from_user_into, copy_to_user, copy_user_cstr},
+	arch::x86_64::{paging::{map_phys_page, switch_pml4}, syscall::SyscallFrame}, drivers::{console, io::getchar}, errno::KernelErrors::{self, EAGAIN}, fs::dirent::DirentTypes, klog, memory::{PAGE_SIZE, USER_HEAP_RANGE, pmm::PhysAllocator}, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, block_current, process::{self, find_zombie, fork_child_from, has_waitable_child, reap}, schedule, with_current_process}, syscalls::{
+		errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr},
 	}, vfs::{self, SeekOrigin, file::{AT_FDCWD, VfsFileOpenflags}, mkdir, path::is_absolute},
 };
 
@@ -303,7 +303,6 @@ pub fn sys_execve(path_ptr: u64, _argv: u64, _envp: u64, frame: &mut SyscallFram
 		let proc = pt[current_pid].as_mut().ok_or(KernelErrors::EINVAL)?;
 
 		frame.rip_saved = process::exec_replace_image(proc, &elf_buf)?;
-		let cr3 = proc.cr3;
 		let proc_rsp = proc.rsp;
 		drop(pt);
 
@@ -334,7 +333,7 @@ pub fn sys_exit(code: u64) -> ! {
 	unreachable!()
 }
 
-pub fn sys_waitid(id_type: u64, id: u64, _infop: u64, _options: u64, frame: &SyscallFrame) -> i64 {
+pub fn sys_waitid(id_type: u64, id: u64, _infop: u64, _options: u64, _frame: &SyscallFrame) -> i64 {
 	let parent_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Acquire);
 
 	loop {
@@ -448,7 +447,6 @@ pub fn sys_getdents(fd: u64, dirp: u64, count: u64) -> i64 {
 	with_current_process(|proc| {
 		let file = proc.fd_table[fd as usize].as_mut()?;
 		let mut idx = file.offset;
-
 		if !file.inode.is_dir() { return Some(neg(KernelErrors::ENOTDIR));}
 
 		while let Ok(Some(entry)) = file.inode.clone().readdir(idx) {
@@ -466,7 +464,7 @@ pub fn sys_getdents(fd: u64, dirp: u64, count: u64) -> i64 {
 			rec[0..8].copy_from_slice(&entry.ino.to_le_bytes());
 			rec[8..16].copy_from_slice(&(idx + 1).to_le_bytes());
 			rec[16..18].copy_from_slice(&(reclen as u16).to_le_bytes());
-			rec[18] = if entry.is_dir { 4 } else { 8 };
+			rec[18] = if entry.is_dir { DirentTypes::Directory as u8 } else { DirentTypes::Regular as u8 };
 			rec[19..19 + entry.name.len()].copy_from_slice(entry.name.as_bytes());
 			idx += 1;
 		}
