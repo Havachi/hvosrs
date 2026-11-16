@@ -80,7 +80,6 @@ pub extern "C" fn syscall_dispatch_rs(syscall_no: u64, frame: &mut SyscallFrame)
 			frame.rip_saved
 		);
 	}
-
 	leave_kernel_page_table(leave_cr3);
 	clear_user_cr3();
 	ret
@@ -93,7 +92,6 @@ pub fn syscall_dispatcher(nr: u64, frame: &mut SyscallFrame) -> i64 {
 		klog!("syscall {} out of range", nr);
 		return -38;
 	}
-
 
 	let retval = DISPATCH_TABLE[idx] (
 		nr,
@@ -108,6 +106,7 @@ pub fn syscall_dispatcher(nr: u64, frame: &mut SyscallFrame) -> i64 {
 	if nr == SYS_EXIT as u64 {
 		crate::kpanic!("sys_exit returned to syscall dispatcher");
 	}
+
 	if retval == -38 {
 		let pid = CURRENT_PID.load(Ordering::Acquire);
 		klog!(

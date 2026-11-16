@@ -1,5 +1,5 @@
 use core::fmt;
-
+const STRACE: bool = true;
 pub struct KernelLogger;
 
 impl fmt::Write for KernelLogger {
@@ -11,6 +11,9 @@ impl fmt::Write for KernelLogger {
 
 pub fn _ksprint(args: fmt::Arguments) {
 	use fmt::Write;
+	if STRACE == false {
+		return;
+	}
 	x86_64::instructions::interrupts::without_interrupts(|| {
 		let mut l = KernelLogger;
 		let _ = l.write_fmt(args);
@@ -58,4 +61,12 @@ pub fn _kpanic(args: fmt::Arguments) -> ! {
 	});
 	loop { unsafe {core::arch::asm!("hlt")} };
 }
-// #endregion
+
+
+pub fn _kstrace(args: fmt::Arguments) {
+	use fmt::Write;
+	x86_64::instructions::interrupts::without_interrupts(|| {
+		let mut l = KernelLogger;
+		let _ = l.write_fmt(args);
+	});
+}

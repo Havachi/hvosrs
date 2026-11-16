@@ -66,6 +66,10 @@ macro_rules! ksprint {
 }
 
 #[macro_export]
+macro_rules! kstrace {
+	($($arg:tt)*) => { $crate::debug::_kstrace(format_args!($($arg)*)) };
+}
+#[macro_export]
 macro_rules! klog {
 	($($arg:tt)*) => { $crate::debug::_klog(format_args!($($arg)*)) };
 }

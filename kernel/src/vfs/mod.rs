@@ -167,6 +167,7 @@ pub fn seek(file: &mut VfsFile, offset: u64, origin: SeekOrigin) -> Result<u64, 
 
 pub fn read_file_all(file: &mut VfsFile) -> Result<Vec<u8>, KernelErrors> {
 	let file_len:usize = file.len();
+	
 	if file_len == 0 {
 		return Err(KernelErrors::EINVAL);
 	}

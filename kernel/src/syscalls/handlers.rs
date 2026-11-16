@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
 
 use crate::{
-	arch::x86_64::{paging::{map_phys_page, switch_pml4}, syscall::SyscallFrame}, drivers::{console, io::getchar}, errno::KernelErrors::{self, EAGAIN}, fs::dirent::DirentTypes, klog, memory::{PAGE_SIZE, USER_HEAP_RANGE, pmm::PhysAllocator}, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, block_current, process::{self, find_zombie, fork_child_from, has_waitable_child, reap}, schedule, with_current_process}, syscalls::{
+	arch::x86_64::{paging::{map_phys_page, switch_pml4}, syscall::SyscallFrame}, drivers::{console, io::getchar}, errno::KernelErrors::{self, EAGAIN}, fs::dirent::DirentTypes, klog, ksprint, kstrace, memory::{PAGE_SIZE, USER_HEAP_RANGE, pmm::PhysAllocator}, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, block_current, process::{self, find_zombie, fork_child_from, has_waitable_child, reap}, schedule, with_current_process}, syscalls::{
 		errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr},
 	}, vfs::{self, SeekOrigin, file::{AT_FDCWD, VfsFileOpenflags}, mkdir, path::is_absolute},
 };
@@ -182,7 +182,6 @@ pub fn sys_openat(dfd: u64, path_ptr: u64, flags: u64, _mode: u64) -> i64 {
 	if !is_absolute(path) && dfd != AT_FDCWD as u64 {
 		return neg(KernelErrors::EBADF);
 	} else{
-		klog!("sys_open: {path}");
 		let file = match vfs::open(path, flags as u32) {
 			Ok(f) => f,
 			Err(e) => return neg(e),
@@ -316,9 +315,10 @@ pub fn sys_execve(path_ptr: u64, _argv: u64, _envp: u64, frame: &mut SyscallFram
 
 pub fn sys_exit(code: u64) -> ! {
 	x86_64::instructions::interrupts::without_interrupts(|| {
-
+		
 		let mut pt = PROCESS_TABLE.lock();
 		let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Acquire);
+		kstrace!("[{}] exit {}\n",current_pid, code);
 		let proc = pt[current_pid as usize].as_mut().unwrap();
 
 		proc.state = process::ProcessState::Dead;
@@ -334,7 +334,9 @@ pub fn sys_exit(code: u64) -> ! {
 }
 
 pub fn sys_waitid(id_type: u64, id: u64, _infop: u64, _options: u64, _frame: &SyscallFrame) -> i64 {
+	
 	let parent_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Acquire);
+	kstrace!("waitid({},{},{},{},{})\n",parent_pid, id_type, id, _infop, _options);
 
 	loop {
 		let cpid = if id_type == 0 { 0 } else if id_type == 1 { id } else { return neg(KernelErrors::EINVAL); };
@@ -362,6 +364,7 @@ pub fn sys_getpid() -> i64 {
 pub fn sys_brk(addr: u64) -> i64 {
 	if addr == 0 {
 		return with_current_process(|proc| {
+			kstrace!("bkr({:#x}) = {:#x}\n", addr, proc.brk as i64);
 			proc.brk
 		}).unwrap() as i64;
 	} else if USER_HEAP_RANGE.contains(addr) {
@@ -407,6 +410,7 @@ pub fn sys_brk(addr: u64) -> i64 {
 			}
 			unsafe { switch_pml4(current_cr3) };
 			p.brk = current_brk + nb_pages * PAGE_SIZE as u64;
+			kstrace!("bkr({:#x}) = {:#x}\n", addr, p.brk as i64);
 			return p.brk as i64;
 		}).unwrap_or_else(|| neg(KernelErrors::ENOMEM))
 	} else {
@@ -415,6 +419,7 @@ pub fn sys_brk(addr: u64) -> i64 {
 }
 
 pub fn sys_chdir(path_ptr: u64) -> i64 {
+
 	let path_bytes = match copy_user_cstr(path_ptr, MAX_PATH) {
 		Ok(b) => b,
 		Err(e) => return e,
@@ -423,8 +428,8 @@ pub fn sys_chdir(path_ptr: u64) -> i64 {
 		Ok(s) => s,
 		Err(_) => return neg(KernelErrors::EINVAL),
 	};
+	kstrace!("chdir({})\n", path);
 
-	klog!("chdir got path: {}", path);
 	let cwd = process::get_cwd();
 
 	let dir = match vfs::lookup(path, cwd) {
@@ -440,11 +445,13 @@ pub fn sys_chdir(path_ptr: u64) -> i64 {
 }
 
 pub fn sys_getdents(fd: u64, dirp: u64, count: u64) -> i64 {
+
+
 	if count == 0 {
 		return neg(KernelErrors::EINVAL);
 	}
 	let mut list: Vec<u8> = Vec::new();
-	with_current_process(|proc| {
+	let res = with_current_process(|proc| {
 		let file = proc.fd_table[fd as usize].as_mut()?;
 		let mut idx = file.offset;
 		if !file.inode.is_dir() { return Some(neg(KernelErrors::ENOTDIR));}
@@ -472,6 +479,8 @@ pub fn sys_getdents(fd: u64, dirp: u64, count: u64) -> i64 {
 		copy_to_user(dirp, &list).ok()?;
 		file.offset = idx;
 		Some(list.len() as i64)
-	}).unwrap_or_else(|| Some(neg(KernelErrors::EINVAL))).unwrap_or(neg(KernelErrors::EINVAL))
-	
+	}).unwrap_or_else(|| Some(neg(KernelErrors::EINVAL))).unwrap_or(neg(KernelErrors::EINVAL));
+
+	kstrace!("getdents({}, {}, {}) = {}\n", fd, dirp, count, res);
+	return res;
 }
