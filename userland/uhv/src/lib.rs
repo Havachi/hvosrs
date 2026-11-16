@@ -3,7 +3,8 @@
 
 pub mod heap;
 mod syscalls;
-
+mod files;
+pub use files::*;
 pub use syscalls::*;
 
 extern crate alloc;

@@ -1,12 +1,14 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::AtomicI64;
+pub mod builtins;
+use core::ptr::null;
+
+use builtins::*;
 
 use alloc::{collections::BTreeMap, format, string::{String, ToString}, vec::Vec};
 use uhv::*;
 extern crate alloc;
-pub static SHELL_STATUS: AtomicI64 = AtomicI64::new(0);
 
 pub fn init(env: &mut Env) {
 	env.pwd = String::from("/");
@@ -95,17 +97,37 @@ fn repl(env: &mut Env, buf: &Vec<u8>) -> Result<(), i64> {
 
 	match cmd.as_str() {
 		"cd" => cd(env, &parsed)?,
+		"clear" => clear()?,
 		"echo" => echo(env, &parsed)?,
+		"exec" => exec(env, &parsed)?,
 		"exit" => exit(0),
-		"help" => help(),
+		"help" => if parsed.len() == 1 { help(&String::new());} else { help(&parsed[1]);},
 		"history" => history(env),
 		"ls" => ls(env, &parsed)?,
 		"mkdir" => mkdir_wrapper(&parsed)?,
 		"pwd" => pwd(env)?,
-
 		_ => {
-			if args[0].contains('=') {
+			if parsed[0].contains('=') {
 				return set_var(env, &parsed[0]);
+			}
+
+			if parsed[0].starts_with("./") {
+
+				let p = fork();
+				if p == 0 {
+					let ret = execve(parsed[0].as_bytes(), null(), null());
+					if ret < 0 {
+						eprintln!("shell: {}: {}", errno_to_str(ret), parsed[0]);
+						exit(ret as u32);
+					}
+				} else if p > 0 {
+					let _ = waitid(0, 0, 0, 0);
+					return Ok(());
+				} else {
+					eprintln!("shell: failed to fork");
+					exit(p as u32);
+				}
+
 			}
 			eprintln!("shell: command not found: {}", cmd);
 			return Err(127)
@@ -130,75 +152,6 @@ fn split_cmd(buf: &Vec<u8>) -> Result<(String, Vec<String>), i64>{
 	Ok((cmd, args))
 }
 
-fn pwd(env: &Env) -> Result<(), i64> {
-	println!("{}", env.pwd);
-	Ok(())
-}
-
-fn cd(env: &mut Env, arg: &Vec<String>) -> Result<(), i64> {
-	if arg.len() < 2 {
-		return Err(-22);
-	}
-	let path = arg[1].as_str();
-
-	if path.len() < 1 {
-		return Err(-22);
-	}
-
-	let res = chdir(path);
-	if res < 0 {
-		return Err(res);
-	}
-	
-	env.pwd = join_pwd(&env.pwd, path);
-	env.update();
-	Ok(())
-}
-
-//TODO, retreive file/dir metadata and print them with the name
-fn ls(env: &mut Env, arg: &Vec<String>) -> Result<(), i64> {
-
-	let path = if arg.len() <= 1 {
-		&env.pwd
-	} else {
-		&arg[1]
-	};
-	println!("ls path: {path}");
-	let f = open(path.as_str().as_bytes(), 0o000200000);
-	if f < 0 {
-		return Err(f);
-	}
-
-	let mut raw = [0u8; 256];
-	loop {
-		let n = getdents(f, &mut raw);
-		if n <= 0 { break; }
-		let mut off = 0usize;
-		while off + 19 <= n as usize {
-			let reclen = u16::from_le_bytes([raw[off+16], raw[off + 17]]) as usize;
-			if reclen == 0 || off + reclen > n as usize { break; }
-			let name_end = raw[off + 19..off + reclen].iter().position(|&b| b == 0).unwrap_or(0);
-			let name = core::str::from_utf8(&raw[off + 19..off + 19 + name_end]).unwrap_or("?");
-			let filetype = raw[off + 18];
-			match filetype {
-				4 => {
-					println!("\t\x1b[94m{name}\x1b[0m");
-				}
-				8 => {
-					println!("\t\x1b[97m{name}\x1b[0m")
-				}
-				_ => {
-					println!("\t{name}");
-				}
-			}
-			off += reclen;
-		}
-	}
-	close(f);
-	Ok(())
-}
-
-
 fn mkdir_wrapper(arg: &Vec<String>) -> Result<(), i64> {
 	if arg.len() < 2 {
 		return Err(-22);
@@ -206,28 +159,8 @@ fn mkdir_wrapper(arg: &Vec<String>) -> Result<(), i64> {
 	let ret = mkdir(arg[1].as_str());
 	if ret < 0 {
 		return Err(ret);
-	} 
+	}
 	Ok(())
-}
-
-fn history(env: &Env) {
-	if env.history.len() == 0 {
-		println!("history is empty");
-		return;
-	}
-	for (i, line) in env.history.iter().enumerate() {
-		println!("{} {}", i, line);
-	}
-}
-
-fn help() {
-	println!("command available:");
-	println!("cd <dir>\t| Change directory");
-	println!("exit\t\t| Exit current program");
-	println!("help\t\t| This");
-	println!("history\t| Display command history");
-	println!("ls [dir]\t| List file and directories");
-	println!("pwd\t\t| Show current directory");
 }
 
 #[derive(Debug, Default)]
@@ -278,23 +211,6 @@ fn join_pwd(current: &str, arg: &str) -> String {
 		out.push_str(p);
 	}
 	out
-}
-
-pub fn echo(env: &Env, arg: &Vec<String>) -> Result<(), i64> {
-	//remove the echo from args
-	let args = &arg[1..];
-	for s in args {
-		if s.contains('$') {
-			match env.get_var(&s[1..].to_string()) {
-				Some(v) => print!("{}", v),
-				None => print!(""),
-			}
-		} else {
-			print!("{}", s)
-		}
-	}
-	println!();
-	Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -360,20 +276,6 @@ fn set_var(env: &mut Env, args: &String) -> Result<(), i64> {
 		}
 	}
 	// goes here if arg doesn't contain '='
-	Err(-22)
-}
-
-fn get_var(env: &Env, arg: &String) -> Result<Option<ShellVar>, i64> {
-	if arg.starts_with("$") {
-		//skip the $
-		let varname = &arg[1..];
-		//Variable exists
-		if let Some(val) = env.vars.get(&varname.to_string()) {
-			return Ok(Some(val.clone()))
-		} else {//Variable doesn't exists
-			return Ok(None);
-		}
-	}
 	Err(-22)
 }
 

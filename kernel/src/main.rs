@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+use kernel::fs::cpio::load_initrd;
 use kernel::limine_requests::MODULES;
 use kernel::scheduler::process;
 use kernel::vfs::file::VfsFileOpenflags;
@@ -26,24 +27,9 @@ fn init() {
     if let Some(modules_response) = MODULES.response(){
 
         for module in modules_response.modules() {
-            if module.path().contains("init") {
-                klog!("loading init");
-                if let Ok((pid, proc)) = process::create_process_from_elf(module.data(), 0).map_err(|e| kerror!("Failed loading module: {e}")) {
-                    scheduler::add_proc(pid, proc);
-                    klog!("{} -> {}", module.path(), pid);
-                }
-            }
-            if module.path().contains("shell") {
-                let _ = vfs::create("/bin/shell");
-                let mut file = vfs::open("/bin/shell", VfsFileOpenflags::O_RDWR.bits()).expect("open /bin/shell");
-                match vfs::write(&mut file, module.data()) {
-                    Ok(written) => {
-                        klog!("written {}B in {}", written, module.path());
-                    },
-                    Err(err) => {
-                        kerror!("error while writting to /bin/shell: {:?}", err);
-                    },
-                };
+            if module.path() == "/initrd" {
+                klog!("loading initrd");
+                let _= load_initrd(module.data());
             }
         }
     }
@@ -56,6 +42,12 @@ pub extern "C" fn _start() {
     //kprint!("\x1B[H\x1B[2J");
 
     kprint!("HvOS 0.1\n");
+
+    let mut init_file = vfs::open("/bin/init", VfsFileOpenflags::O_RDONLY.bits()).unwrap();
+    let data = vfs::read_file_all(&mut init_file).unwrap();
+    if let Ok((pid, proc)) = process::create_process_from_elf(&data, 0).map_err(|e| kerror!("Failed loading module: {e}")) {
+        scheduler::add_proc(pid, proc);
+    }
     scheduler::schedule();
     loop {
         //unsafe {core::arch::asm!("hlt")};

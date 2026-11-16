@@ -1,4 +1,4 @@
-use std::{fs::{self}, path::{Path, PathBuf}, process::Stdio};
+use std::{fs::{self, File}, io::Write, path::{Path, PathBuf}, process::Stdio};
 
 use cargo_metadata::Metadata;
 use thiserror::Error;
@@ -252,13 +252,17 @@ impl Builder {
 	}
 
 	fn copy_userland_programs(&mut self) -> Result<(), BuildError> {
-		std::fs::create_dir_all("./target/iso_root/userland").unwrap();
+		std::fs::create_dir_all("./target/initrd/bin").unwrap();
+		std::fs::create_dir_all("./target/initrd/lib").unwrap();
+		
 		let userland_dirs = fs::read_dir("userland").unwrap();
+		let mut paths = Vec::new();
+
 		for d in userland_dirs {
 			if let Ok(entry) = d {
 				if entry.file_type().unwrap().is_dir() {
 					let crate_name = entry.file_name().to_ascii_lowercase();
-				   let src_path = if crate_name == "uhv" {
+					let src_path = if crate_name == "uhv" {
 						PathBuf::from("./target/userland")
 							.join(&crate_name)
 							.join("x86_64-unknown-none/release/").join("libuhv.rlib")
@@ -268,12 +272,17 @@ impl Builder {
 							.join("x86_64-unknown-none/release/")
 							.join(&crate_name)
 					};
-
-					let target = if crate_name == "init" || crate_name == "shell" {
-						PathBuf::from("./target/iso_root/boot").join(&crate_name)
+					
+					
+					let target = if crate_name == "uhv"{
+						PathBuf::from("./target/initrd/lib").join(&crate_name)
 					} else {
-						PathBuf::from("./target/iso_root/userland").join(&crate_name)
+						PathBuf::from("./target/initrd/bin").join(&crate_name)
 					};
+					let relp = target.strip_prefix("./target/initrd").or_else(|_| target.strip_prefix("target/initrd")).unwrap();
+					let relpath = Path::new("./").join(relp);
+					paths.push(relpath.clone());
+					
 					std::fs::copy(
 						&src_path,
 						&target
@@ -284,6 +293,30 @@ impl Builder {
 				}
 			}
 		}
+
+		//somehow make a cpio archive
+		
+		let target_cpio = File::create("./target/iso_root/initrd")?;
+		let mut o = std::process::Command::new("cpio")
+			.current_dir("./target/initrd")
+			.args([
+				"-o",
+				"-0",
+				"-H", "newc"
+			])
+			.stdin(Stdio::piped())
+			.stdout(Stdio::from(target_cpio))
+			.spawn()?
+			;
+		if let Some(mut stdin) = o.stdin.take() {
+			for path in paths {
+				stdin.write_all(path.to_string_lossy().as_bytes())?;
+				stdin.write_all(b"\0")?;
+			}
+		}
+
+		let _ = o.wait()?;
+		
 		Ok(())
 	}
 	fn create_limine_iso(&self, config: &Config) -> Result<(), BuildError> {

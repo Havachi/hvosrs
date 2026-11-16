@@ -78,6 +78,7 @@ pub fn mkdir(path: &str) -> i64 {
 }
 
 pub fn waitid(idtype: u64, id:u64, infop: u64, option: u64) -> i64 {
+	
 	unsafe {syscall4(SYS_WAITID,idtype, id, infop, option)}
 }
 

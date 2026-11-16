@@ -4,6 +4,7 @@ use crate::{fs::ramfs::RamFs, kerror, klog, vfs::filesystem::vfs_register_filesy
 
 pub mod ramfs;
 pub mod dirent;
+pub mod cpio;
 
 pub fn init() {
 
