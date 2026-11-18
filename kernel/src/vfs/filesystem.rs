@@ -1,6 +1,7 @@
+use alloc::{string::String, sync::Arc, vec::Vec};
 use spin::Mutex;
 
-use crate::{errno::KernelErrors, vfs::dentry::VfsDentry};
+use crate::{errno::KernelErrors, vfs::{dentry::VfsDentry, inode::DeviceId, superblock::Superblock}};
 
 ///Every future filesystem drivers must implement this trait to work with the Vfs
 ///Vfs will internally call those function
@@ -20,25 +21,27 @@ impl VfsFilesystemRegistry {
 		}
 	}
 
-	pub fn unregister(&mut self, name: [u8; 16]) -> Result<(), &'static str> {
+	pub fn unregister(&mut self, name: [u8; 16]) -> Result<(), KernelErrors> {
 		for entry in self.fs_types.iter_mut() {
 			if let Some(e) = entry {
 				if e.name == name {
-					*entry = None
+					*entry = None;
+					self.count -= 1;
+					return Ok(());
 				}
 			}
 		}
-		Err("Failed unregistering fs type, not found in registry")
+		Err(KernelErrors::EINVAL)
 	} 
 
-	pub fn register(&mut self, name: [u8; 16], fs_type: &'static dyn VfsFilesystem) -> Result<(), &'static str> {
+	pub fn register(&mut self, name: [u8; 16], fs_type: &'static dyn VfsFilesystem) -> Result<(), KernelErrors> {
 		if self.count >= 16 {
-			return Err("Failed to register filesystem, registry is full");
+			return Err(KernelErrors::EBUSY);
 		}
 		for entry in self.fs_types.iter(){
 			if let Some(reg) = entry {
 				if reg.name == name {
-					return Err("Detected duplicate registration");
+					return Err(KernelErrors::EBUSY);
 				}
 			}
 		}
@@ -49,10 +52,10 @@ impl VfsFilesystemRegistry {
 				return Ok(());
 			}
 		}
-		Err("Failed to register fs")
+		Err(KernelErrors::EINVAL)
 	}
 
-	pub fn find(&self, name: [u8; 16]) -> Result<&'static dyn VfsFilesystem, &'static str>  {
+	pub fn find(&self, name: [u8; 16]) -> Result<&'static dyn VfsFilesystem, KernelErrors>  {
 		for fst_e in self.fs_types.iter() {
 			if let Some(fs) = fst_e {
 				if fs.name == name {
@@ -60,7 +63,18 @@ impl VfsFilesystemRegistry {
 				}
 			}
 		}
-		Err("fs type not found")
+		Err(KernelErrors::EINVAL)
+	}
+
+	pub fn find_id(&self, name: [u8; 16]) -> Result<u64, KernelErrors> {
+		for (i, fst_e) in self.fs_types.iter().enumerate() {
+			if let Some(fs) = fst_e {
+				if fs.name == name {
+					return Ok(i as u64)
+				}
+			}
+		}
+		Err(KernelErrors::EINVAL)
 	}
 
 }
@@ -72,19 +86,30 @@ pub struct VfsRegistredFilesystem {
 
 pub trait VfsFilesystem: Sync + Send {
 	fn get_name(&self) -> [u8; 16];
-	fn mount(&self, path: &str) -> Result<VfsDentry, KernelErrors>;
+	fn mount(&self, dev: Option<DeviceId>) -> Result<Arc<dyn Superblock>, KernelErrors>;
 }
 
-pub fn vfs_register_filesystem(fs_type: &'static dyn VfsFilesystem) -> Result<(), &'static str>{
+pub fn vfs_register_filesystem(fs_type: &'static dyn VfsFilesystem) -> Result<(), KernelErrors>{
 	let mut reg = FST_REG.lock();
 	let name = fs_type.get_name();
 	reg.register(name, fs_type)?;
 	Ok(())
 }
 
-pub fn vfs_unregister_filesystem(fs_type: &'static dyn VfsFilesystem) -> Result<(), &'static str> {
+pub fn vfs_unregister_filesystem(fs_type: &'static dyn VfsFilesystem) -> Result<(), KernelErrors> {
 	let mut reg = FST_REG.lock();
 	let name = fs_type.get_name();
 	let _ = reg.unregister(name)?;
 	Ok(())
 }
+
+pub struct VfsMount {
+	pub mountpoint: String,
+	pub mountpoint_dentry: Option<Arc<VfsDentry>>,
+	pub fs_name: [u8; 16],
+	pub sb: Arc<dyn Superblock>,
+	pub root_dentry: Arc<VfsDentry>,
+}
+
+pub static VFS_MOUNTS: Mutex<Vec<VfsMount>> = Mutex::new(Vec::new());
+

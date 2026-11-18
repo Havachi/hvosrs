@@ -1,4 +1,4 @@
-use crate::{errno::KernelErrors, klog, vfs::{self, file::VfsFileOpenflags}};
+use crate::{errno::KernelErrors, ksprint, vfs::{self, file::VfsFileOpenflags, path::path_parent}};
 
 
 
@@ -26,7 +26,7 @@ const _: () = assert!(core::mem::size_of::<CpioNewcHeader>() == 110);
 
 impl CpioNewcHeader {
     pub fn is_valid(&self) -> bool {
-        &self.c_magic == b"070701"
+        &self.c_magic == b"070701" || &self.c_magic == b"070702"
     }
 
     pub fn namesize(&self) -> Option<usize> {
@@ -84,7 +84,8 @@ impl<'a> Iterator for CpioIter<'a> {
         let hdr_bytes = self.archive.get(self.offset..self.offset + HEADER_LEN)?;
 
         // Verify magic "070701"
-        if &hdr_bytes[0..6] != b"070701" {
+        if &hdr_bytes[0..6] != b"070701" && &hdr_bytes[0..6] != b"070702"{
+            ksprint!("[CPIO] Invalid magic at offset {}: {:?}\n", self.offset, &hdr_bytes[0..6]);
             return None;
         }
 
@@ -123,21 +124,36 @@ impl<'a> Iterator for CpioIter<'a> {
 pub fn load_initrd(initrd_slice: &[u8]) -> Result<(), KernelErrors> {
     for entry in CpioIter::new(initrd_slice) {
     	let path = entry.name.trim_start_matches("./").trim_start_matches("/");
+
 		if path.is_empty() || path == "." {
 			continue;
 		}
 
 		let file_type = entry.mode & S_IFMT;
+        let parent_path = path_parent(path)?;
+
+        let parent_dentry = vfs::lookup(parent_path, None)?;
+        let entry_name = path.rsplit_once('/')
+            .map(|(_, name)| name).unwrap_or(path);
 
 		match file_type {
 			S_IFDIR => {
-				let _ = vfs::mkdir(path);
+				match vfs::mkdir(&parent_dentry, entry_name) {
+                    Ok(_) | Err(KernelErrors::EEXIST) => {}
+                    Err(e) => return Err(e)
+                }
 			},
 			S_IFREG => {
 				if let Some((parent, _)) = path.rsplit_once('/') {
-					let _ = vfs::mkdir(parent);
+                    let grand_parent_path = path_parent(parent)?;
+                    let grand_parent_dentry = vfs::lookup(grand_parent_path, None)?;
+                    let dir_name = parent.rsplit_once('/').map(|(_, name)| name).unwrap_or(parent);
+                    match vfs::mkdir(&grand_parent_dentry, dir_name) {
+                        Ok(_) | Err(KernelErrors::EEXIST) => {}
+                        Err(e) => return Err(e),
+                    }
 				}
-
+                
 				vfs::create(path)?;
 				let mut file = vfs::open(path,VfsFileOpenflags::O_RDWR.bits())?;
 				vfs::write(&mut file, entry.data)?;

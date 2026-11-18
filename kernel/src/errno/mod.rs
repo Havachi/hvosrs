@@ -15,15 +15,21 @@ pub fn errno() -> i64 {
 
 #[non_exhaustive]
 #[repr(u64)]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum KernelErrors {
 	///Operation not permitted
 	EPERM = 1,
 	///No such file or directory
 	ENOENT = 2,
+	///No such process
+	ESRCH = 3,
+	///Interrupted system call
+	EINTR = 4,
+	///Input/output error
+	EIO = 5,
 	///Bad file descriptor
 	EBADF = 9,
-	//No child processes
+	///No child processes
 	ECHILD = 10,
 	///Resource temporarily unavailable
 	EAGAIN = 11,
@@ -31,18 +37,23 @@ pub enum KernelErrors {
 	ENOMEM = 12,
 	///Permission Denied
 	EACCESS = 13,
-	//Bad address
+	///Bad address
 	EFAULT = 14,
+	///Block device required
+	ENOTBLK = 15,
 	///Ressource or device busy
 	EBUSY = 16,
 	///File Exist
 	EEXIST = 17,
+	///No such device
+	ENODEV = 19,
 	///Not a directory
 	ENOTDIR = 20,
 	///Is a directory
 	EISDIR = 21,
 	///Invalid argument
 	EINVAL = 22,
+	ENOSYS = 38,
 }
 
 impl KernelErrors {

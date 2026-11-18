@@ -105,6 +105,8 @@ fn repl(env: &mut Env, buf: &Vec<u8>) -> Result<(), i64> {
 		"history" => history(env),
 		"ls" => ls(env, &parsed)?,
 		"mkdir" => mkdir_wrapper(&parsed)?,
+		"mkfs" => mkfs(&parsed)?,
+		"mount" => builtins::mount(&parsed)?,
 		"pwd" => pwd(env)?,
 		_ => {
 			if parsed[0].contains('=') {

@@ -4,10 +4,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::{
-	arch::x86_64::{asm::{mmio_read, mmio_write}, idt::NVME_INT_VECTOR},
-	drivers::pci::{configure_msix_entry, scan_bus, PciDevice},
-	kerror, ksprint,
-	memory::{mmio::{map_mmio_region, mmio_alloc}, PAGE_SIZE, vmm::phys_to_virt},
+	arch::x86_64::{asm::{mmio_read, mmio_write}, idt::NVME_INT_VECTOR}, drivers::pci::{PciDevice, configure_msix_entry, scan_bus}, errno::KernelErrors, kerror, ksprint, memory::{PAGE_SIZE, mmio::{map_mmio_region, mmio_alloc}, vmm::phys_to_virt},
 };
 
 use super::{
@@ -17,11 +14,11 @@ use super::{
 	registers::*,
 };
 
+
 pub struct MsixState {
 	pub table_virt: VirtAddr,
 	pub entry_index: usize,
 }
-
 pub struct NvmeDriver {
 	mmio_base: VirtAddr,
 	doorbell_stride: u32,
@@ -35,6 +32,7 @@ pub struct NvmeDriver {
 	io_completion_pending: AtomicBool,
 	next_io_cid: u16,
 }
+
 
 impl NvmeDriver {
 	pub fn discover() -> Result<Self, &'static str> {
@@ -214,12 +212,12 @@ impl NvmeDriver {
 		NvmeNamespace::new(nsid, sector_size as u32, id.nsze, shared)
 	}
 
-	pub fn submit_io_read(&mut self, nsid: u32, lba: u64, count: u32, buf_phys: u64) -> Result<(), &'static str> {
-		self.submit_io_nvm(0x02, nsid, lba, count, buf_phys)
+	pub fn submit_io_read(&mut self, nsid: u32, lba: u64, count: u32, buf_phys: u64) -> Result<(), KernelErrors> {
+		self.submit_io_nvm(0x02, nsid, lba, count, buf_phys).map_err(|_| KernelErrors::EIO)
 	}
 
-	pub fn submit_io_write(&mut self, nsid: u32, lba: u64, count: u32, buf_phys: u64) -> Result<(), &'static str> {
-		self.submit_io_nvm(0x01, nsid, lba, count, buf_phys)
+	pub fn submit_io_write(&mut self, nsid: u32, lba: u64, count: u32, buf_phys: u64) -> Result<(), KernelErrors> {
+		self.submit_io_nvm(0x01, nsid, lba, count, buf_phys).map_err(|_| KernelErrors::EIO)
 	}
 
 	fn submit_io_nvm(

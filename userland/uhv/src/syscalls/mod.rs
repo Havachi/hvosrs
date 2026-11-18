@@ -1,8 +1,11 @@
 mod macros;
+use alloc::vec;
 use macros::*;
 
 mod rax;
 use rax::*;
+
+use crate::Stat;
 
 pub fn read(fd: i64, buf: &mut [u8]) -> i64 {
 	unsafe { syscall3(SYS_READ, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64) }
@@ -72,7 +75,7 @@ pub fn mkdir(path: &str) -> i64 {
 	let buf = path_cstr(path);
 	let e = unsafe { syscall1(SYS_MKDIR, buf.as_ptr() as u64) };
 	if e != 0 {
-		return -1;
+		return e;
 	}
 	return 0;
 }
@@ -80,6 +83,18 @@ pub fn mkdir(path: &str) -> i64 {
 pub fn waitid(idtype: u64, id:u64, infop: u64, option: u64) -> i64 {
 	
 	unsafe {syscall4(SYS_WAITID,idtype, id, infop, option)}
+}
+
+pub fn stat(path: &str, statbuf: &mut [u8]) -> i64 {
+	unsafe { syscall2(SYS_STAT, path.as_ptr() as u64, statbuf.as_mut_ptr() as u64) }
+}
+
+pub fn fstat(fd: u64, statbuf: &mut [u8]) -> i64 {
+	unsafe { syscall2(SYS_FSTAT, fd, statbuf.as_mut_ptr() as u64) }
+}
+
+pub fn mount(device_path: &str, mount_path: &str) -> i64 {
+	unsafe {syscall5(SYS_MOUNT, device_path.as_ptr() as u64, mount_path.as_ptr() as u64, 0, 0, 0)}
 }
 
 fn path_bytes_cstr(path: &[u8]) -> alloc::vec::Vec<u8> {
@@ -96,3 +111,4 @@ fn path_cstr(path: &str) -> alloc::vec::Vec<u8> {
 	buf.push(0);
 	buf
 }
+

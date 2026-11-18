@@ -1,8 +1,8 @@
 
-use alloc::format;
+use alloc::{format, sync::Arc};
 use spin::Mutex;
 
-use crate::{drivers::block::{ahci::AhciDevice, atapio::AtaPioDevice}, errno::KernelErrors, kerror, klog, vfs};
+use crate::{drivers::block::{ahci::AhciDevice, atapio::AtaPioDevice}, errno::KernelErrors, fs::ext2::inode::{Ext2InodeMode}, kerror, klog, vfs::{self, inode::DeviceId}};
 
 pub mod ahci;
 pub mod nvme;
@@ -13,13 +13,14 @@ pub static DEV_MGR: Mutex<DeviceManager> = Mutex::new(DeviceManager::new());
 pub trait BlockDevice: Sync + Send  {
 	fn block_size(&self) -> u32;
 	fn block_count(&self) -> u64;
-	fn read_block(&mut self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), &'static str>;
-	fn write_block(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), &'static str>;
+	fn read_block(&self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), KernelErrors>;
+	fn write_block(&self, lba: u64, count: u32, buf: &[u8]) -> Result<(), KernelErrors>;
 }
 
 pub struct RegisteredDevice {
+	pub dev_id: DeviceId,
 	pub name: [u8; 16],
-	pub device: &'static mut dyn BlockDevice,
+	pub device: Arc<dyn BlockDevice>,
 }
 
 pub struct DeviceManager {
@@ -40,33 +41,41 @@ impl DeviceManager {
 		self.count
 	}
 
-	pub fn register(&mut self, name: [u8; 16], device: &'static mut dyn BlockDevice) -> Result<(), &'static str> {
+	pub fn register(&mut self,id: DeviceId, name: [u8; 16], device: Arc<dyn BlockDevice>) -> Result<(), &'static str> {
 		if self.count >= 16 {
 			return Err("Device registry full");
 		}
-		self.devices[self.count] = Some(RegisteredDevice { name, device });
+
+		self.devices[self.count] = Some(RegisteredDevice {dev_id: id, name, device });
 		self.count += 1;
 		Ok(())
 	}
+	
 	//To be run after VFS is inited
 	pub fn register_in_vfs(&self) -> Result<(), KernelErrors> {
 		for device in self.devices.as_ref() {
 			if let Some(dev) = device {
-				if let Ok(dev_name) = str::from_utf8(&dev.name) {
+				let end = dev.name.iter().position(|&b| b == 0).unwrap_or(dev.name.len());
+
+				if let Ok(dev_name) = str::from_utf8(&dev.name[..end]) {
+					if dev_name.is_empty() {
+						continue;
+					}
 					let path = format!("/dev/{}", dev_name);
-					vfs::create(path.as_str())?;
+					let mode = Ext2InodeMode::BlkDev | Ext2InodeMode::from_bits_truncate(0o660);
+					vfs::mkdev(path.as_str(), mode.bits() as u16, dev.dev_id)?;
 				}
 			}
 		}
 		Ok(())
 	}
 
-	pub fn find(&mut self, name: &[u8]) -> Option<&mut dyn BlockDevice> {
+	pub fn find_by_name(&mut self, name: &[u8]) -> Option<Arc<dyn BlockDevice>> {
 
 		for slot in &mut self.devices {
 			if let Some(dev) = slot {
 				if dev.name.starts_with(name){
-					return Some(dev.device);
+					return Some(dev.device.clone());
 				}
 			}
 		}
@@ -74,11 +83,45 @@ impl DeviceManager {
 		None
 	}
 
-	pub fn list_drive_names(&self) {
-		
+	pub fn find_by_id(&self, id: DeviceId) -> Option<Arc<dyn BlockDevice>> {
+		for slot in &self.devices {
+			if let Some(dev) = slot {
+				if dev.dev_id == id {
+					return Some(dev.device.clone());
+				}
+			}
+		}
+
+		None
 	}
+
+
 }
 
+impl IntoIterator for DeviceManager {
+	type Item = Option<RegisteredDevice>;
+	type IntoIter = core::array::IntoIter<Option<RegisteredDevice>, 16>;
+
+	fn into_iter(self) -> Self::IntoIter {
+		self.devices.into_iter()
+	}
+}
+impl<'a> IntoIterator for &'a DeviceManager {
+    type Item = &'a Option<RegisteredDevice>;
+    type IntoIter = core::slice::Iter<'a, Option<RegisteredDevice>>;
+	
+	fn into_iter(self) -> Self::IntoIter {
+		self.devices.iter()
+	}
+}
+impl<'a> IntoIterator for &'a mut DeviceManager {
+    type Item = &'a mut Option<RegisteredDevice>;
+    type IntoIter = core::slice::IterMut<'a, Option<RegisteredDevice>>;
+	
+	fn into_iter(self) -> Self::IntoIter {
+		self.devices.iter_mut()
+	}
+}
 
 pub fn init() {
 	let mut reg = DEV_MGR.lock();

@@ -7,11 +7,7 @@ use core::sync::atomic::Ordering;
 use x86_64::registers::rflags::RFlags;
 
 use crate::{
-	arch::x86_64::{asm::current_cr3, syscall::SyscallFrame},
-	klog,
-	memory::USER_RANGE,
-	scheduler::{CURRENT_PID, with_current_process},
-	syscalls::{
+	arch::x86_64::{asm::current_cr3, syscall::SyscallFrame}, klog, memory::USER_RANGE, scheduler::{CURRENT_PID, with_current_process}, syscalls::{
 		handlers::*,
 		user_access::{clear_user_cr3, enter_kernel_page_table, leave_kernel_page_table, set_user_cr3},
 	},
@@ -29,8 +25,13 @@ const fn make_table() -> [SyscallFn; NR_SYSCALLS] {
 	t[SYS_WRITE] = |_, fd, buf, len, _, _, _| sys_write(fd as i32, buf, len as usize);
 	t[SYS_OPEN] = |_, path, flags, mode, _, _, _| sys_open(path, flags, mode);
 	t[SYS_CLOSE] = |_, fd, _, _, _, _, _| sys_close(fd as i32);
+	t[SYS_STAT] = |_, path, buf, _, _, _, _| sys_stat(path, buf);
+	t[SYS_FSTAT] = |_, fd, buf, _, _, _, _| sys_fstat(fd, buf);
+	t[SYS_LSTAT] = |_, path, buf, _, _, _, _| sys_lstat(path, buf);
+
 	t[SYS_LSEEK] = |_, fd, offset, whence, _, _, _| sys_lseek(fd as i32, offset as i64, whence as i32);
 	t[SYS_BRK] = |_,addr,_,_,_,_,_| sys_brk(addr);
+	t[SYS_PWRITE64] = |_, fd, buf, len, pos, _, _| sys_pwrite64(fd as i32, buf, len as usize, pos);
 	t[SYS_GETPID] = |_,_,_,_,_,_,_|  sys_getpid();
 	t[SYS_FORK] = |_,_,_,_,_,_,f| sys_fork(f);
 	t[SYS_EXECVE] = |_,path,argv,envp,_,_,f| sys_execve(path, argv, envp, f);
@@ -38,14 +39,13 @@ const fn make_table() -> [SyscallFn; NR_SYSCALLS] {
 	t[SYS_GETDENTS] = |_,fd,dirp,count,_,_,_| sys_getdents(fd, dirp, count);
 	t[SYS_CHDIR] = |_,path,_,_,_,_,_| sys_chdir(path);
 	t[SYS_MKDIR] = |_,path,_,_,_,_,_| sys_mkdir(path);
+	t[SYS_MOUNT] = |_, dev_name, dir_name, mtype, flags, data,_| sys_mount(dev_name, dir_name, mtype, flags, data);
 	t[SYS_WAITID] = |_,idtype,id,infop,option,_,f| sys_waitid(idtype, id, infop, option, f);
 	t[SYS_OPENAT] = |_,dfd, path_ptr, flags, mode, _,_| sys_openat(dfd, path_ptr, flags, mode);
 	t
 }
 
 static DISPATCH_TABLE:[SyscallFn; NR_SYSCALLS] = make_table();
-
-
 
 /// Called from the syscall asm stub: kernel stack is already set up.
 #[inline(never)]

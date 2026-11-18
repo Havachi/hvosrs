@@ -4,17 +4,20 @@ pub mod protocol;
 pub mod queues;
 pub mod registers;
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use core::sync::atomic::AtomicU16;
+
+use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use crate::{
-	drivers::block::DeviceManager, kerror, memory::mmio::mmio_alloc, vfs,
+	drivers::block::DeviceManager, kerror, memory::mmio::mmio_alloc, vfs::{inode::DeviceId},
 };
 
 pub use driver::NvmeDriver;
 pub use protocol::{NvmeCommand, NvmeIdCtrl, NvmeIdNs};
 
 static NVME_DRIVERS: Mutex<Vec<Arc<Mutex<NvmeDriver>>>> = Mutex::new(Vec::new());
+pub static NEXT_MINOR: AtomicU16 = AtomicU16::new(0);
 
 pub fn register_driver(driver: Arc<Mutex<NvmeDriver>>) {
 	NVME_DRIVERS.lock().push(driver);
@@ -55,8 +58,8 @@ pub fn probe(dev_mgr: &mut DeviceManager) -> Result<usize, &'static str> {
 		let ns = NvmeDriver::namespace_from_identify(shared.clone(), ns_buf_virt, nsid);
 		let mut buf = [0u8; 16];
 		let _ = generate_device_name(cntlid, nsid, &mut buf);
-		let dev = Box::leak(Box::new(ns));
-		dev_mgr.register(buf, dev)?;
+		let dev_id = DeviceId {minor: NEXT_MINOR.fetch_add(1, core::sync::atomic::Ordering::Relaxed), major: 259 };
+		dev_mgr.register(dev_id,buf, Arc::new(ns))?;
 	}
 
 	Ok(dev_mgr.registered_count() - before)

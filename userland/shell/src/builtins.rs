@@ -1,6 +1,6 @@
-use core::ptr::null_mut;
+use core::ptr::{self, null_mut};
 
-use alloc::{string::{String, ToString}, vec::Vec};
+use alloc::{string::{String, ToString}, vec::Vec, vec};
 use uhv::*;
 
 use crate::{Env, join_pwd};
@@ -50,13 +50,20 @@ pub fn ls(env: &mut Env, arg: &Vec<String>) -> Result<(), i64> {
 	} else {
 		&arg[1]
 	};
-	println!("ls path: {path}");
-	let f = open(path.as_str().as_bytes(), VfsFileOpenflags::O_DIRECTORY.bits() as u64);
+	let f = open(
+		path.as_str().as_bytes(), 
+		(VfsFileOpenflags::O_DIRECTORY | VfsFileOpenflags::O_CLOEXEC | VfsFileOpenflags::O_NONBLOCK | VfsFileOpenflags::O_RDONLY).bits() as u64
+	);
 	if f < 0 {
 		return Err(f);
 	}
 
 	let mut raw = [0u8; 256];
+	let mut statbuf = [0u8; size_of::<Stat>()];
+	fstat(f as u64, &mut statbuf);
+	let dirstat = unsafe { ptr::read_unaligned(statbuf.as_ptr() as *const Stat) };
+	println!("total: {}", dirstat.st_blocks);
+
 	loop {
 		let n = getdents(f, &mut raw);
 		if n <= 0 { break; }
@@ -67,17 +74,34 @@ pub fn ls(env: &mut Env, arg: &Vec<String>) -> Result<(), i64> {
 			let name_end = raw[off + 19..off + reclen].iter().position(|&b| b == 0).unwrap_or(0);
 			let name = core::str::from_utf8(&raw[off + 19..off + 19 + name_end]).unwrap_or("?");
 			let filetype = raw[off + 18];
+			let mut filepath = path.clone();
+			filepath.push_str("/");
+			filepath.push_str(name);
+			stat(&filepath, &mut statbuf);
+			let filestat = unsafe { ptr::read_unaligned(statbuf.as_ptr() as *const Stat) };
+
+			print!("{}\t{}\t", filestat.st_ino, InodeMode::from_bits_truncate(filestat.st_mode as u16));
 			match filetype {
+				//Directory
 				4 => {
-					println!("\t\x1b[94m{name}\x1b[0m");
+					print!("\x1b[94m");
 				}
+				//Devices
+				2 | 6 => {
+					print!("\x1b[0;93;40m")
+				}
+				//Regular files
 				8 => {
-					println!("\t\x1b[97m{name}\x1b[0m")
+					print!("\x1b[97m")
+				}
+				//Symlink files
+				10 => {
+					print!("\x1b[0;96;49m")
 				}
 				_ => {
-					println!("\t{name}");
 				}
 			}
+			println!("{name}\x1b[0m");
 			off += reclen;
 		}
 	}
@@ -145,11 +169,9 @@ pub fn clear() -> Result<(), i64> {
 }
 
 pub fn exec(env: &Env, arg: &Vec<String>) -> Result<(), i64> {
-
 	if arg.len() < 2 {
 		return Err(-22);
 	}
-
 	let path = arg[1].as_str();
 	let res = execve(path.as_bytes(), null_mut(), null_mut());
 	if res < 0 {
@@ -157,3 +179,41 @@ pub fn exec(env: &Env, arg: &Vec<String>) -> Result<(), i64> {
 	}
 	Ok(())
 }
+
+pub fn mount(arg: &Vec<String>) -> Result<(), i64> {
+	if arg.len() < 3 {
+		return Err(-22);
+	}
+	let dev = arg[1].as_str();
+	let mnt = arg[2].as_str();
+
+	let res = uhv::mount(dev, mnt);
+	if res < 0 {
+		return Err(res);
+	}
+	Ok(())
+}
+
+pub fn mkfs(arg: &Vec<String>) -> Result<(), i64> {
+	if arg.len() < 2 {
+		return Err(-22);
+	}
+	let path = arg[1].as_str();
+	let fd = open(path.as_bytes(), O_RDWR);
+	if fd < 0 {
+		return Err(fd);
+	}
+	println!("opened {}", path);
+	let mut statbuf = vec![0u8; size_of::<Stat>()];
+	let res = fstat(fd as u64, &mut statbuf);
+	if res < 0 {
+		close(fd);
+		return Err(res);
+	}
+	let filestat = unsafe { ptr::read_unaligned(statbuf.as_ptr() as *const Stat) };
+	println!("stat: {}", filestat.st_rdev);
+
+	Ok(())
+}
+
+

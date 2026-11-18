@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::{errno::KernelErrors::{self, EINVAL}, vfs::dentry::VfsDentry};
+use crate::{errno::KernelErrors::{self, EINVAL}, vfs::{dentry::VfsDentry, filesystem::VFS_MOUNTS}};
 
 
 pub fn path_walk(path: &str, root_dentry: Arc<VfsDentry>, cwd_dentry: Arc<VfsDentry>) -> Result<Arc<VfsDentry>, KernelErrors> {
@@ -13,6 +13,8 @@ pub fn path_walk(path: &str, root_dentry: Arc<VfsDentry>, cwd_dentry: Arc<VfsDen
 	} else {
 		cwd_dentry
 	};
+	current = current.follow_mount();
+
 	let bytes = path.as_bytes();
 	let len = bytes.len();
 	let mut idx = 0;
@@ -33,13 +35,14 @@ pub fn path_walk(path: &str, root_dentry: Arc<VfsDentry>, cwd_dentry: Arc<VfsDen
 		match component {
 			"." => continue,
 			".." => {
-				current = current.parent.clone().unwrap_or_else(|| current.clone());
+				let parent = current.parent.clone().unwrap_or_else(|| current.clone());
+				current = parent.follow_mount();
 			}
 			name => {
 				if !current.inode.is_dir() {
 					return Err(KernelErrors::ENOTDIR);
 				}
-				current = current.inode.clone().lookup(name, Some(current))?;
+				current = current.lookup_child(name)?.follow_mount();
 			}
 		}
 	}

@@ -5,3 +5,7 @@ edition = "2024"
 
 [dependencies]
 uhv = {path="../uhv"}
+
+[profile.release]
+debug = true
+strip = false

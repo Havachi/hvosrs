@@ -3,10 +3,9 @@ use spin::Mutex;
 use x86_64::VirtAddr;
 
 use crate::{
-	drivers::block::{BlockDevice, nvme::driver::NvmeDriver},
-	memory::{PAGE_SIZE, vmm::virt_to_phys},
+	drivers::block::{BlockDevice, nvme::driver::NvmeDriver}, errno::KernelErrors, memory::{PAGE_SIZE, vmm::virt_to_phys},
 };
-
+#[derive(Clone)]
 pub struct NvmeNamespace {
 	nsid: u32,
 	block_size: u32,
@@ -24,17 +23,17 @@ impl NvmeNamespace {
 		}
 	}
 
-	fn validate_io(&self, lba: u64, count: u32, buf_len: usize) -> Result<(), &'static str> {
+	fn validate_io(&self, lba: u64, count: u32, buf_len: usize) -> Result<(), KernelErrors> {
 		if count == 0 {
-			return Err("zero block count");
+			return Err(KernelErrors::EINVAL);
 		}
 		let byte_len = (count as u64) * (self.block_size as u64);
 		if byte_len > buf_len as u64 {
-			return Err("buffer too small for block count");
+			return Err(KernelErrors::EINVAL);
 		}
-		let end = lba.checked_add(count as u64).ok_or("LBA overflow")?;
+		let end = lba.checked_add(count as u64).ok_or(KernelErrors::EFAULT)?;
 		if end > self.block_count {
-			return Err("I/O past end of namespace");
+			return Err(KernelErrors::EIO);
 		}
 		Ok(())
 	}
@@ -47,12 +46,12 @@ impl NvmeNamespace {
 	}
 
 	fn transfer_blocks(
-		&mut self,
+		&self,
 		lba: u64,
 		count: u32,
 		buf: &[u8],
 		read: bool,
-	) -> Result<(), &'static str> {
+	) -> Result<(), KernelErrors> {
 		self.validate_io(lba, count, buf.len())?;
 
 		let block_size = self.block_size;
@@ -67,12 +66,11 @@ impl NvmeNamespace {
 			let buf_phys = virt_to_phys(VirtAddr::from_ptr(chunk_ptr)).as_u64();
 
 			let mut driver = self.driver.lock();
-			let result = if read {
+			if read {
 				driver.submit_io_read(self.nsid, cur_lba, chunk_blocks, buf_phys)
 			} else {
 				driver.submit_io_write(self.nsid, cur_lba, chunk_blocks, buf_phys)
-			};
-			result?;
+			}?;
 
 			blocks_done += chunk_blocks;
 			cur_lba += chunk_blocks as u64;
@@ -91,11 +89,11 @@ impl BlockDevice for NvmeNamespace {
 		self.block_count
 	}
 
-	fn read_block(&mut self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), &'static str> {
+	fn read_block(&self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), KernelErrors> {
 		self.transfer_blocks(lba, count, buf, true)
 	}
 
-	fn write_block(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), &'static str> {
+	fn write_block(&self, lba: u64, count: u32, buf: &[u8]) -> Result<(), KernelErrors> {
 		self.transfer_blocks(lba, count, buf, false)
 	}
 }

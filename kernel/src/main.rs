@@ -44,6 +44,7 @@ pub extern "C" fn _start() {
     kprint!("HvOS 0.1\n");
 
     let mut init_file = vfs::open("/bin/init", VfsFileOpenflags::O_RDONLY.bits()).unwrap();
+    
     let data = vfs::read_file_all(&mut init_file).unwrap();
     if let Ok((pid, proc)) = process::create_process_from_elf(&data, 0).map_err(|e| kerror!("Failed loading module: {e}")) {
         scheduler::add_proc(pid, proc);

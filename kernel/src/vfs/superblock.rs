@@ -1,25 +1,26 @@
 use alloc::sync::Arc;
 
-use crate::{errno::KernelErrors, vfs::{dentry::VfsDentry, inode::{Inode, VfsInode}}};
+use crate::{errno::KernelErrors, vfs::inode::Inode};
 
 
-pub struct VfsSuperblock {
-	block_size: usize,
-	max_file_size: usize,
-	fs_type_id: u32,
-	root: VfsDentry,
-
+pub struct Statfs {
+	pub fs_type: u64,
+	pub blocksize: usize,
+	pub total_blocks: u64,
+	pub free_blocks: u64,
+	pub total_inodes: u64,
+	pub free_inodes: u64,
 }
 
-pub trait SuperOperation {
-	fn alloc_inode(&mut self) -> Result<Option<Arc<dyn Inode>>, KernelErrors>;
-	fn destroy_inode(&mut self, inode: Arc<dyn Inode>) -> Result<(), KernelErrors>;
-	fn free_inode(&mut self, inode: Arc<dyn Inode>) -> Result<(), KernelErrors>;
-	fn dirty_inode(&mut self, inode: Arc<dyn Inode>) -> Result<(), KernelErrors>;
+pub trait Superblock: Send + Sync {
+	fn root(&self) -> Arc<dyn Inode>;
+	fn sync(&self) -> Result<(), KernelErrors>{
+		Ok(())
+	}
+
+	fn statfs(&self) -> Result<Statfs, KernelErrors>;
+	fn unmount(&self) -> Result<(), KernelErrors> {
+		self.sync()
+	}
 }
 
-impl VfsSuperblock {
-	pub fn alloc_inode(&mut self) {}
-	pub fn free_inode(&mut self, inode: &VfsInode) {}
-	pub fn write_inode(inode: &VfsInode) {}
-}

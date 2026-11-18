@@ -1,16 +1,23 @@
-use alloc::boxed::Box;
-
-use crate::{fs::ramfs::RamFs, kerror, klog, vfs::filesystem::vfs_register_filesystem};
+use crate::{kerror, klog};
 
 pub mod ramfs;
 pub mod dirent;
 pub mod cpio;
+pub mod ext2;
+pub mod devtmpfs;
 
 pub fn init() {
 
-	let ramfs = Box::leak(Box::new(RamFs));
-	if let Err(err) = vfs_register_filesystem(ramfs) {
-		kerror!("Error while initializing ramfs\nError: {err}");
+	if let Err(err) = ramfs::init() {
+		kerror!("Error while initializing ramfs\nError: {:?}", err);
+	}
+
+	if let Err(err) = devtmpfs::init() {
+		kerror!("Error while initializing Devtmpfs\nError {:?}", err);
+	}
+
+	if let Err(_err) = ext2::init() {
+		kerror!("No ext2 fs found");
 	}
 
 	klog!("Fs init done");

@@ -2,3 +2,4 @@
 target
 **/target/*
 .qcow2
+nvmeext2.qcow2

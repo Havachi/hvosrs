@@ -1,3 +1,5 @@
+use crate::errno::KernelErrors;
+
 
 
 pub struct AhciDevice {
@@ -8,11 +10,11 @@ pub struct AhciDevice {
 impl super::BlockDevice for AhciDevice {
 	fn block_size(&self) -> u32 { self.block_size }
 	fn block_count(&self) -> u64 { self.block_count }
-	fn read_block(&mut self, _lba: u64, _count: u32, _buf: &mut [u8]) -> Result<(), &'static str> {
+	fn read_block(&self, _lba: u64, _count: u32, _buf: &mut [u8]) -> Result<(), KernelErrors> {
 		Ok(())
 	}
 
-	fn write_block(&mut self, _lba: u64, _count: u32, _buf: &[u8]) -> Result<(), &'static str> {
+	fn write_block(&self, _lba: u64, _count: u32, _buf: &[u8]) -> Result<(), KernelErrors> {
 		Ok(())
 	}
 }	
