@@ -184,7 +184,7 @@ impl Inode for DevInode {
 		match self.vtype {
 			VfsInodeType::CharDev | VfsInodeType::BlockDev => {
 				let dev_id = self.dev_id.ok_or(KernelErrors::ENODEV)?;
-				let mut devmgr = DEV_MGR.lock();
+				let devmgr = DEV_MGR.lock();
 				let driver = devmgr.find_by_id(dev_id).ok_or(KernelErrors::ENODEV)?;
 				driver.read_block(offset, buf.len() as u32 / driver.block_size() , buf).map_err(|_| KernelErrors::EIO)?;
 				Ok(buf.len())
@@ -207,7 +207,7 @@ impl Inode for DevInode {
 		match self.vtype {
 			VfsInodeType::CharDev | VfsInodeType::BlockDev => {
 				let dev_id = self.dev_id.ok_or(ENODEV)?;
-				let mut devmgr = DEV_MGR.lock();
+				let devmgr = DEV_MGR.lock();
 				let driver = devmgr.find_by_id(dev_id).ok_or(KernelErrors::ENODEV)?;
 				driver.write_block(offset, buf.len() as u32 / driver.block_size(), buf).map_err(|_| KernelErrors::EIO)?;
 				Ok(buf.len())
@@ -362,7 +362,7 @@ impl VfsFilesystem for DevTmpFs {
 		DEVTMPFS_NAME
 	}
 
-	fn mount(&self, dev: Option<DeviceId>) -> Result<Arc<dyn Superblock>, KernelErrors> {
+	fn mount(&self, _dev: Option<DeviceId>) -> Result<Arc<dyn Superblock>, KernelErrors> {
 		let sb = DevtmpfsSuperblock::new();
 		let root = sb.root();
 		root.clone().create("test")?;

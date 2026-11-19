@@ -1,9 +1,9 @@
-use core::ptr;
+use core::{ptr};
 
-use alloc::{sync::{Arc}, vec::{Vec}, vec};
+use alloc::{slice, sync::Arc, vec};
 use bitflags::bitflags;
 
-use crate::{drivers::block::BlockDevice, errno::KernelErrors, fs::ext2::{EXT2_FSNAME, EXT2_ROOT_INO, group::{Ext2BGDRaw, Ext2BGDT}, inode::{self, Ext2InodeRaw, Ext2Vnode}, lba_conv}, vfs::{InodeId, filesystem::FST_REG, superblock::{Statfs, Superblock}}};
+use crate::{drivers::block::BlockDevice, errno::KernelErrors, fs::ext2::{EXT2_FSNAME, EXT2_ROOT_INO, group::Ext2BGDT, inode::{Ext2InodeRaw, Ext2Vnode}, lba_conv}, memory::allocate_n_pages, vfs::{InodeId, filesystem::FST_REG, superblock::{Statfs, Superblock}}};
 
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
@@ -96,7 +96,10 @@ pub struct Ext2SuperblockRaw{
 	pub journal_device: u32,
 	///Head of orphan inode list
 	pub orphan_list_head: u32,
+	_res_unused: [u8; 788],
 }
+const _: () = assert!(core::mem::size_of::<Ext2SuperblockRaw>() == 1024);
+
 
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -172,18 +175,23 @@ bitflags! {
 
 impl Ext2SuperblockRaw {
 	pub fn from_blkdev(blkdev: Arc<dyn BlockDevice>) -> Result<Self, KernelErrors> {
-		let mut raw = [0u8; 1024];
 		let blksz = blkdev.block_size();
+		let raw_addr = allocate_n_pages(blksz as usize);
+		let slice: &mut [u8] = unsafe {
+			slice::from_raw_parts_mut(raw_addr.as_u64() as *mut u8, 1024)
+		};
+		let raw: &mut [u8;1024] = slice.try_into().map_err(|_| KernelErrors::ENOMEM)?;
 		if blksz <= 1024 {
 			let lba = (1024 / blksz) as u64;
 			let count = 1024 / blksz;
-			blkdev.read_block(lba, count, &mut raw)?;
+			blkdev.read_block(lba, count, raw)?;
 		} else {
 			let mut sect = alloc::vec![0u8; blksz as usize];
 			blkdev.read_block(0, 1, &mut sect)?;
 			raw.copy_from_slice(&sect[1024..2048]);
 		}
-		Self::from_bytes(&raw)
+		let ar = raw.as_array::<1024>().ok_or(KernelErrors::ENOMEM)?;
+		Self::from_bytes(ar)
 	}
 
 	pub fn from_bytes(raw: &[u8; 1024]) -> Result<Self, KernelErrors> {
@@ -191,7 +199,8 @@ impl Ext2SuperblockRaw {
 			let sb_ptr = raw.as_ptr() as *const Ext2SuperblockRaw;
 			ptr::read_unaligned(sb_ptr)
 		};
-		if sb.magic != 0xEF53 {
+		let magic = sb.magic;
+		if magic != 0xEF53 {
 			return Err(KernelErrors::EINVAL);
 		}
 		Ok(sb)
@@ -210,7 +219,6 @@ impl Ext2SuperblockRaw {
 	}
 
 }
-
 
 pub struct Ext2Sb {
 	dev: Arc<dyn BlockDevice>,
@@ -247,7 +255,7 @@ impl Ext2Sb {
 	pub fn new(dev: Arc<dyn BlockDevice>, raw_sb: Ext2SuperblockRaw, bgdt: Ext2BGDT) -> Result<Arc<dyn Superblock>, KernelErrors> {
 		let block_size = raw_sb.block_size();
 		let inode_size = (if raw_sb.inode_size == 0 { 128 } else { raw_sb.inode_size }) as u32 ;
-		let root_raw = read_raw_inode(dev.clone(), &raw_sb, &bgdt, EXT2_ROOT_INO)?;
+		let root_raw = Ext2Sb::read_raw_inode_from_parts(&dev, &raw_sb, &bgdt, EXT2_ROOT_INO)?;
 		Ok(Arc::new_cyclic(|weak_sb| {
 			let root = Ext2Vnode::new_root(weak_sb.clone(), root_raw);
 			Self {
@@ -261,7 +269,7 @@ impl Ext2Sb {
 		}))
 	}
 
-	pub fn read_block(&self, lba: u64, buf: &mut Vec<u8>) -> Result<(), KernelErrors> {
+	pub fn read_block(&self, lba: u64, buf: &mut vec::Vec<u8>) -> Result<(), KernelErrors> {
 		if buf.len() < self.block_size as usize {
 			return Err(KernelErrors::EINVAL);
 		}
@@ -269,14 +277,14 @@ impl Ext2Sb {
 		Ok(())
 	}
 
-	pub fn read_n_blocks(&self, lba: u64, n: usize, buf: &mut Vec<u8>) -> Result<(), KernelErrors> {
+	pub fn read_n_blocks(&self, lba: u64, n: usize, buf: &mut vec::Vec<u8>) -> Result<(), KernelErrors> {
 		let total_len = n * self.block_size as usize;
 		if buf.len() < total_len { return Err(KernelErrors::EINVAL); }
 		self.dev.read_block(lba, n as u32, buf)?;
 		Ok(())
 	}
 
-	pub fn write_block(&self, lba: u64, buf: &Vec<u8>) -> Result<(), KernelErrors> {
+	pub fn write_block(&self, lba: u64, buf: &vec::Vec<u8>) -> Result<(), KernelErrors> {
 		if buf.len() < self.block_size as usize {
 			return Err(KernelErrors::EINVAL);
 		}
@@ -284,7 +292,7 @@ impl Ext2Sb {
 		Ok(())
 	}
 
-	pub fn write_n_blocks(&self, lba: u64, n: usize, buf: &Vec<u8>) -> Result<(), KernelErrors> {
+	pub fn write_n_blocks(&self, lba: u64, n: usize, buf: &vec::Vec<u8>) -> Result<(), KernelErrors> {
 		let total_len = n * self.block_size as usize;
 		if buf.len() < total_len { return Err(KernelErrors::EINVAL); }
 		self.dev.write_block(lba, n as u32, buf)?;
@@ -292,39 +300,13 @@ impl Ext2Sb {
 	}
 
 	pub fn read_inode(self: Arc<Self>, ino: InodeId) -> Result<Ext2Vnode, KernelErrors> {
-		if ino == 0 {
-			return Err(KernelErrors::EINVAL);
-		}
-
-		let ino_idx = (ino as usize) - 1;
-		let bg = ino_idx / self.raw_sb.inodes_per_group as usize;
-		let idx = ino_idx % self.raw_sb.inodes_per_group as usize;
-
-		let table_lba = self.bgdt.table.get(bg)
-			.ok_or(KernelErrors::EINVAL)?
-			.inode_table as u64;
-
-		let inode_tbl_lba = lba_conv(
-			self.block_size as u64,
-			self.dev.block_size() as u64, 
-			table_lba
-		);
-		
-		let mut blkbuf = vec![0u8; self.block_size as usize];
-		self.read_block(inode_tbl_lba, &mut blkbuf)?;
-		let byte_offset = idx.checked_mul(self.inode_size as usize)
-			.ok_or(KernelErrors::EINVAL)?;
-
-		if byte_offset + self.inode_size as usize > blkbuf.len() {
-			return Err(KernelErrors::EINVAL);
-		}
-
-		let inode = unsafe {
-			core::ptr::read_unaligned(
-				blkbuf.as_ptr().add(byte_offset) as *const Ext2InodeRaw
-			)
-		};
-		Ok(Ext2Vnode::from_raw(ino, inode, Arc::downgrade(&self)))
+		let raw_inode = Self::read_raw_inode_from_parts(
+			&self.dev,
+			&self.raw_sb,
+			&self.bgdt,
+			ino,
+		)?;
+		Ok(Ext2Vnode::from_raw(ino, raw_inode, Arc::downgrade(&self)))
 	}
 
 	pub fn write_inode(self: Arc<Self>, ino: InodeId, inode: &Ext2Vnode) -> Result<(), KernelErrors> {
@@ -363,16 +345,116 @@ impl Ext2Sb {
 		Ok(())
 	}
 
-}
+	pub fn block_size(self: Arc<Self>) -> u64 {
+		self.block_size as u64
+	}
 
-fn read_raw_inode(dev: Arc<dyn BlockDevice>, raw_sb: &Ext2SuperblockRaw, bgdt: &Ext2BGDT, ino: InodeId) -> Result<Ext2InodeRaw, KernelErrors> {
-		let bg = (ino as usize - 1) / raw_sb.inodes_per_group as usize; 
-		let idx = (ino as usize  - 1) % raw_sb.inodes_per_group as usize;
-		let inode_tbl_lba = lba_conv(raw_sb.block_size() as u64, dev.block_size() as u64, bgdt.table[bg as usize].inode_table as u64);
-		let mut blkbuf = vec![0u8; raw_sb.block_size() as usize];
-		dev.read_block(inode_tbl_lba, 1, &mut blkbuf)?;
-		let byte_offset = idx.checked_mul(raw_sb.inode_size as usize).ok_or(KernelErrors::EINVAL)?;
-		let ptr = unsafe { blkbuf.as_ptr().add(byte_offset) as *mut Ext2InodeRaw };
-		Ok(unsafe { (*ptr).clone() })
-}
+	pub fn read_indirect_ptr(&self, block_num: u32, index: u64) -> Result<u32, KernelErrors> {
+		if block_num == 0 {
+			return Ok(0);
+		}
 
+		let mut buf = vec![0u8; self.block_size as usize];
+		self.read_block(block_num as u64, &mut buf)?;
+
+		let offset = (index as usize) * 4;
+		let bytes = [
+			buf[offset],
+			buf[offset + 1],
+			buf[offset + 2],
+			buf[offset + 3],
+		];
+		Ok(u32::from_le_bytes(bytes))
+	}
+
+	pub fn file_offset_to_block(
+		&self,
+		i_block: &[u32; 15],
+		file_offset: u64,
+	) -> Result<Option<u64>, KernelErrors>
+	{
+		let block_size = self.block_size as u64;
+		let logical_block = file_offset / block_size;
+		let ptrs_per_block = block_size / 4;
+
+		let single_limit = 12 + ptrs_per_block;
+		let double_limit = single_limit + (ptrs_per_block * ptrs_per_block);
+		let triple_limit = double_limit + (ptrs_per_block * ptrs_per_block * ptrs_per_block);
+
+		let phys_block = if logical_block < 12 {
+			i_block[logical_block as usize]
+		} else if logical_block < single_limit {
+			let idx = logical_block - 12;
+			self.read_indirect_ptr(i_block[12], idx)?
+		} else if logical_block < double_limit {
+			let idx = logical_block - single_limit;
+			let l1_block = self.read_indirect_ptr(i_block[13], idx / ptrs_per_block)?;
+			self.read_indirect_ptr(l1_block, idx % ptrs_per_block)?
+		} else if logical_block < triple_limit {
+			let idx = logical_block - double_limit;
+			let ptrs_sq = ptrs_per_block * ptrs_per_block;
+			let l1_block = self.read_indirect_ptr(i_block[14], idx / ptrs_sq)?;
+			let l2_block = self.read_indirect_ptr(l1_block, (idx / ptrs_per_block) % ptrs_per_block)?;
+			self.read_indirect_ptr(l2_block, idx % ptrs_per_block)?
+		} else {
+			return Err(KernelErrors::EINVAL);
+		};
+
+		if phys_block == 0 {
+			return Ok(None);
+		} else {
+			Ok(Some(phys_block as u64))
+		}
+	}
+
+	fn read_raw_inode_from_parts(
+		dev: &Arc<dyn BlockDevice>,
+		raw_sb: &Ext2SuperblockRaw,
+		bgdt: &Ext2BGDT,
+		ino: InodeId,
+	) -> Result<Ext2InodeRaw, KernelErrors> {
+		if ino == 0 || ino > raw_sb.total_inodes as u64 {
+			return Err(KernelErrors::ENOENT);
+		}
+
+		let fs_blk_size = raw_sb.block_size() as usize;
+		let dev_blk_size = dev.block_size() as usize;
+		let inode_size = raw_sb.inode_size as usize;
+
+		let ino_idx = (ino as usize) - 1;
+		let bg = ino_idx / raw_sb.inodes_per_group as usize;
+		let idx = ino_idx % raw_sb.inodes_per_group as usize;
+
+		let byte_offset = idx.checked_mul(inode_size).ok_or(KernelErrors::EINVAL)?;
+		let block_offset = (byte_offset / fs_blk_size) as u64;
+		let offset_in_block = byte_offset % fs_blk_size;
+		if offset_in_block + core::mem::size_of::<Ext2InodeRaw>() > fs_blk_size {
+			return Err(KernelErrors::EINVAL);
+		}
+
+		let table_start_block = bgdt
+			.table
+			.get(bg)
+			.ok_or(KernelErrors::EINVAL)?
+			.inode_table as u64;
+
+		let target_lba = lba_conv(
+			fs_blk_size as u64,
+			dev_blk_size as u64,
+			table_start_block + block_offset,
+		);
+		let sectors_per_block = (fs_blk_size / dev_blk_size) as u32;
+
+		let mut blkbuf = vec![0u8; fs_blk_size];
+		dev.read_block(target_lba, sectors_per_block, &mut blkbuf)?;
+
+		let inode = unsafe {
+			core::ptr::read_unaligned(
+				blkbuf.as_ptr().add(offset_in_block) as *const Ext2InodeRaw,
+			)
+		};
+
+		Ok(inode)
+	}
+
+}

@@ -1,6 +1,8 @@
 use core::ops::Add;
 use x86_64::VirtAddr;
 
+use crate::errno::KernelErrors;
+
 use super::protocol::{CompletionQueueEntry, NvmeCommand};
 
 pub struct SubmissionQueue {
@@ -52,14 +54,14 @@ impl CompletionQueue {
 		self.virt.add(offset).as_ptr() as *const CompletionQueueEntry
 	}
 
-	pub fn try_complete_one(&mut self) -> Result<bool, &'static str> {
+	pub fn try_complete_one(&mut self) -> Result<bool, KernelErrors> {
 		let cqe = unsafe { core::ptr::read_volatile(self.entry_ptr()) };
 		if cqe.phase_bit() != self.phase {
 			return Ok(false);
 		}
 		let sc = cqe.status_code();
 		if sc != 0 {
-			return Err("NVMe command returned error status");
+			return Err(KernelErrors::EIO);
 		}
 		self.head += 1;
 		if self.head >= self.size {
@@ -69,7 +71,7 @@ impl CompletionQueue {
 		Ok(true)
 	}
 
-	pub fn wait_one(&mut self, fatal_check: impl Fn() -> Result<(), &'static str>) -> Result<(), &'static str> {
+	pub fn wait_one(&mut self, fatal_check: impl Fn() -> Result<(), KernelErrors>) -> Result<(), KernelErrors> {
 		loop {
 			fatal_check()?;
 			if self.try_complete_one()? {
@@ -79,7 +81,7 @@ impl CompletionQueue {
 		}
 	}
 
-	pub fn drain_available(&mut self) -> Result<u32, &'static str> {
+	pub fn drain_available(&mut self) -> Result<u32, KernelErrors> {
 		let mut count = 0;
 		while self.try_complete_one()? {
 			count += 1;

@@ -324,7 +324,7 @@ impl VfsFilesystem for RamFs {
 		RAMFS_NAME
 	}
 
-	fn mount(&self, dev: Option<DeviceId>) -> Result<Arc<dyn Superblock>, KernelErrors> {
+	fn mount(&self, _: Option<DeviceId>) -> Result<Arc<dyn Superblock>, KernelErrors> {
 		let sb = RamfsSuperblock::new();
 		let root = sb.root();
 		root.clone().mkdir("bin")?;

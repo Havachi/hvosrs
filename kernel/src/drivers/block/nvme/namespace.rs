@@ -1,9 +1,11 @@
+use core::cmp::max;
+
 use alloc::sync::Arc;
 use spin::Mutex;
-use x86_64::VirtAddr;
+use x86_64::{PhysAddr, VirtAddr};
 
 use crate::{
-	drivers::block::{BlockDevice, nvme::driver::NvmeDriver}, errno::KernelErrors, memory::{PAGE_SIZE, vmm::virt_to_phys},
+	drivers::block::{BlockDevice, nvme::driver::NvmeDriver}, errno::KernelErrors, memory::{PAGE_SIZE, mmio::mmio_alloc},
 };
 #[derive(Clone)]
 pub struct NvmeNamespace {
@@ -11,15 +13,23 @@ pub struct NvmeNamespace {
 	block_size: u32,
 	block_count: u64,
 	driver: Arc<Mutex<NvmeDriver>>,
+	dma_virt: VirtAddr,
+	dma_phys: PhysAddr,
+	dma_cap: usize,
 }
 
 impl NvmeNamespace {
 	pub fn new(nsid: u32, block_size: u32, block_count: u64, driver: Arc<Mutex<NvmeDriver>>) -> Self {
+		let Some((dma_phys, dma_virt)) = mmio_alloc(PAGE_SIZE) else { panic!("oom")};
+
 		Self {
 			nsid,
 			block_size,
 			block_count,
 			driver,
+			dma_virt: dma_virt,
+			dma_phys: dma_phys,
+			dma_cap: PAGE_SIZE
 		}
 	}
 
@@ -49,32 +59,53 @@ impl NvmeNamespace {
 		&self,
 		lba: u64,
 		count: u32,
-		buf: &[u8],
+		buf_ptr: *mut u8,
+		buf_len: usize,
 		read: bool,
 	) -> Result<(), KernelErrors> {
-		self.validate_io(lba, count, buf.len())?;
+		self.validate_io(lba, count, buf_len)?;
+		let block_size = self.block_size as usize;
+		let max_blocks_per_chunk = (self.dma_cap / block_size) as u32;
+		if max_blocks_per_chunk == 0 {
+			return Err(KernelErrors::EINVAL);
+		}
 
-		let block_size = self.block_size;
-		let mut blocks_done = 0u32;
+		let dma_ptr = self.dma_virt.as_mut_ptr::<u8>();
+		let dma_phys = self.dma_phys.as_u64();
+
+		let mut driver = self.driver.lock();
+
+		let mut block_done = 0u32;
 		let mut cur_lba = lba;
 
-		while blocks_done < count {
-			let byte_off = (blocks_done as u64) * (block_size as u64);
-			let chunk_ptr = buf.as_ptr().wrapping_add(byte_off as usize);
-			let chunk_blocks = Self::max_blocks_in_page(chunk_ptr, block_size)
-				.min(count - blocks_done);
-			let buf_phys = virt_to_phys(VirtAddr::from_ptr(chunk_ptr)).as_u64();
+		while block_done < count {
+			let chunk_blocks = (count - block_done).min(max_blocks_per_chunk);
+			let chunk_bytes = (chunk_blocks as usize) * block_size;
+			let user_offset = (block_done as usize) * block_size;
 
-			let mut driver = self.driver.lock();
 			if read {
-				driver.submit_io_read(self.nsid, cur_lba, chunk_blocks, buf_phys)
+				driver.submit_io_read(self.nsid, cur_lba, chunk_blocks, dma_phys)?;
+				unsafe {
+					core::ptr::copy_nonoverlapping(
+						dma_ptr, 
+						buf_ptr.add(user_offset), 
+						chunk_bytes
+					);
+				}
 			} else {
-				driver.submit_io_write(self.nsid, cur_lba, chunk_blocks, buf_phys)
-			}?;
-
-			blocks_done += chunk_blocks;
+				unsafe {
+					core::ptr::copy_nonoverlapping(
+						buf_ptr.add(user_offset), 
+						dma_ptr, 
+						chunk_bytes
+					);
+				}
+				driver.submit_io_write(self.nsid, cur_lba, chunk_blocks, dma_phys)?;
+			}
+			block_done += chunk_blocks;
 			cur_lba += chunk_blocks as u64;
 		}
+
 
 		Ok(())
 	}
@@ -90,10 +121,10 @@ impl BlockDevice for NvmeNamespace {
 	}
 
 	fn read_block(&self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), KernelErrors> {
-		self.transfer_blocks(lba, count, buf, true)
+		self.transfer_blocks(lba, count, buf.as_mut_ptr(), buf.len(), true)
 	}
 
 	fn write_block(&self, lba: u64, count: u32, buf: &[u8]) -> Result<(), KernelErrors> {
-		self.transfer_blocks(lba, count, buf, false)
+		self.transfer_blocks(lba, count, buf.as_ptr() as *mut u8, buf.len(), false)
 	}
 }

@@ -54,6 +54,8 @@ pub enum KernelErrors {
 	///Invalid argument
 	EINVAL = 22,
 	ENOSYS = 38,
+	ETIME = 62,
+	ETIMEDOUT = 110,
 }
 
 impl KernelErrors {

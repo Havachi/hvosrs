@@ -1,5 +1,3 @@
-use crate::fs::ext2::EXT2_NAME_LEN;
-
 
 pub struct Ext2Dentry {
 	d_inode: u32,
@@ -21,3 +19,4 @@ pub enum Ext2DentryType {
 	Socket = 6,
 	Symlink =  7
 }
+

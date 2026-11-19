@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::{
-	arch::x86_64::{asm::{mmio_read, mmio_write}, idt::NVME_INT_VECTOR}, drivers::pci::{PciDevice, configure_msix_entry, scan_bus}, errno::KernelErrors, kerror, ksprint, memory::{PAGE_SIZE, mmio::{map_mmio_region, mmio_alloc}, vmm::phys_to_virt},
+	arch::x86_64::{asm::{mmio_read, mmio_write}, idt::NVME_INT_VECTOR}, drivers::pci::{PciDevice, configure_msix_entry, scan_bus}, errno::KernelErrors, memory::{PAGE_SIZE, mmio::{map_mmio_region, mmio_alloc}, vmm::phys_to_virt},
 };
 
 use super::{
@@ -35,7 +35,7 @@ pub struct NvmeDriver {
 
 
 impl NvmeDriver {
-	pub fn discover() -> Result<Self, &'static str> {
+	pub fn discover() -> Result<Self, KernelErrors> {
 		let mut target = None;
 		scan_bus(|dev| {
 			if dev.common_header.class == 0x01
@@ -45,24 +45,23 @@ impl NvmeDriver {
 				target = Some(dev);
 			}
 		});
-		let mut pci = target.ok_or("No NVMe PCI device found")?;
+		let mut pci = target.ok_or(KernelErrors::ENODEV)?;
 		let msix = Self::setup_msix(&mut pci)?;
 
 		if let Some(bar0) = pci.read_bar(0) {
 			if bar0 & 0b1111 != 0b0100 {
-				kerror!("NVMe PCI Bar is in an invalid state");
-				return Err("Invalid NVMe BAR");
+				return Err(KernelErrors::ENODEV);
 			}
 		}
 
 		let mmio_size = pci
 			.find_mmio_region_size(true, 0)
-			.ok_or("Failed to size NVMe MMIO")?;
-		let b0 = pci.read_bar(0).ok_or("Failed to read BAR0")?;
-		let b1 = pci.read_bar(1).ok_or("Failed to read BAR1")?;
+			.ok_or(KernelErrors::ENOMEM)?;
+		let b0 = pci.read_bar(0).ok_or(KernelErrors::ENOMEM)?;
+		let b1 = pci.read_bar(1).ok_or(KernelErrors::ENOMEM)?;
 		let phys_addr = ((b1 as u64) << 32) | ((b0 as u64) & 0xFFFFFFF0);
 		let mmio_base = map_mmio_region(phys_addr, mmio_size as usize)
-			.ok_or("Failed to map NVMe MMIO")?;
+			.ok_or(KernelErrors::ENOMEM)?;
 
 		let cap_raw: u64 = unsafe { mmio_read(mmio_base.as_ptr(), REG_CAP) };
 		let dstrd = ((cap_raw >> 32) & 0xf) as u32;
@@ -83,7 +82,7 @@ impl NvmeDriver {
 		})
 	}
 
-	fn setup_msix(pci: &mut PciDevice) -> Result<Option<MsixState>, &'static str> {
+	fn setup_msix(pci: &mut PciDevice) -> Result<Option<MsixState>, KernelErrors> {
 		let msix_offset = match pci.find_msix_offset() {
 			Ok(off) => off,
 			Err(_) => return Ok(None),
@@ -91,11 +90,11 @@ impl NvmeDriver {
 		let msix_cfg = pci.enable_and_parse_msix(msix_offset);
 
 		let bar_idx = msix_cfg.bar_index;
-		let bar_lo = pci.read_bar(bar_idx).ok_or("MSI-X BAR read failed")?;
+		let bar_lo = pci.read_bar(bar_idx).ok_or(KernelErrors::ENOMEM)?;
 		let bar_phys = (bar_lo & 0xFFFFFFF0) as u64;
 		let table_phys = bar_phys + msix_cfg.table_byte_offset as u64;
 		let table_virt = map_mmio_region(table_phys, PAGE_SIZE)
-			.ok_or("Failed to map MSI-X table")?;
+			.ok_or(KernelErrors::ENOMEM)?;
 
 		unsafe {
 			configure_msix_entry(table_virt, 0, NVME_INT_VECTOR, 0);
@@ -107,7 +106,7 @@ impl NvmeDriver {
 		}))
 	}
 
-	pub unsafe fn init(&mut self) -> Result<(), &'static str> {
+	pub unsafe fn init(&mut self) -> Result<(), KernelErrors> {
 		unsafe { self.reset()? };
 
 		let cap_raw = self.read_cap();
@@ -118,16 +117,16 @@ impl NvmeDriver {
 		let n_acq = PAGE_SIZE as u32 / 16;
 
 		if mqes < (n_acq + n_asq) as u64 {
-			return Err("MQES to small");
+			return Err(KernelErrors::ENOMEM);
 		}
 
 		let aqa_val = (((n_acq - 1) & 0xFFF) << 16) | ((n_asq - 1) & 0xFFF);
 		self.write_aqa(aqa_val);
 
-		let (asq_phys, asq_virt) = mmio_alloc(1).ok_or("Failed to allocated memory for ASQ")?;
-		let (acq_phys, acq_virt) = mmio_alloc(1).ok_or("Failed to allocated memory for ACQ")?;
-		let (iosq_phys, iosq_virt) = mmio_alloc(1).ok_or("Failed to allocated memory for IOSQ")?;
-		let (iocq_phys, iocq_virt) = mmio_alloc(1).ok_or("Failed to allocated memory for IOCQ")?;
+		let (asq_phys, asq_virt) = mmio_alloc(1).ok_or(KernelErrors::ENOMEM)?;
+		let (acq_phys, acq_virt) = mmio_alloc(1).ok_or(KernelErrors::ENOMEM)?;
+		let (iosq_phys, iosq_virt) = mmio_alloc(1).ok_or(KernelErrors::ENOMEM)?;
+		let (iocq_phys, iocq_virt) = mmio_alloc(1).ok_or(KernelErrors::ENOMEM)?;
 
 		self.admin_sq = SubmissionQueue::new(asq_virt, n_asq);
 		self.admin_cq = CompletionQueue::new(acq_virt, n_acq);
@@ -159,9 +158,9 @@ impl NvmeDriver {
 		self.cntlid
 	}
 
-	pub unsafe fn identify_controller(&mut self) -> Result<(), &'static str> {
+	pub unsafe fn identify_controller(&mut self) -> Result<(), KernelErrors> {
 		let (id_buf_phys, id_buf_virt) =
-			mmio_alloc(1).ok_or("Failed to allocate memory for identify response buffer")?;
+			mmio_alloc(1).ok_or(KernelErrors::ENOMEM)?;
 		let cmd = NvmeCommand::new_identify(0, 1, id_buf_phys.as_u64());
 		self.submit_admin_cmd(cmd)?;
 		let id = NvmeIdCtrl::from_virt(id_buf_virt);
@@ -169,7 +168,7 @@ impl NvmeDriver {
 		Ok(())
 	}
 
-	pub fn get_active_namespace(&mut self, list_buf_phys: PhysAddr) -> Result<Vec<u32>, &'static str> {
+	pub fn get_active_namespace(&mut self, list_buf_phys: PhysAddr) -> Result<Vec<u32>, KernelErrors> {
 		let mut cmd = NvmeCommand::zero();
 		cmd.opcode = 0x06;
 		cmd.nsid = 0;
@@ -189,7 +188,7 @@ impl NvmeDriver {
 		Ok(active_nsid)
 	}
 
-	pub fn identify_namespace(&mut self, nsid: u32, ns_buf_phys: PhysAddr) -> Result<(), &'static str> {
+	pub fn identify_namespace(&mut self, nsid: u32, ns_buf_phys: PhysAddr) -> Result<(), KernelErrors> {
 		let mut cmd = NvmeCommand::zero();
 		cmd.opcode = 0x06;
 		cmd.nsid = nsid;
@@ -227,9 +226,9 @@ impl NvmeDriver {
 		lba: u64,
 		count: u32,
 		buf_phys: u64,
-	) -> Result<(), &'static str> {
+	) -> Result<(), KernelErrors> {
 		if count == 0 {
-			return Err("NVMe I/O requires at least one block");
+			return Err(KernelErrors::EINVAL);
 		}
 		let mut cmd = NvmeCommand::zero();
 		cmd.opcode = opcode;
@@ -244,7 +243,7 @@ impl NvmeDriver {
 		self.wait_io_completion()
 	}
 
-	pub fn service_io_completions(&mut self) -> Result<(), &'static str> {
+	pub fn service_io_completions(&mut self) -> Result<(), KernelErrors> {
 		let n = self.io_cq.drain_available()?;
 		if n > 0 {
 			self.ring_cq_doorbell(1);
@@ -253,7 +252,7 @@ impl NvmeDriver {
 		Ok(())
 	}
 
-	fn wait_io_completion(&mut self) -> Result<(), &'static str> {
+	fn wait_io_completion(&mut self) -> Result<(), KernelErrors> {
 		loop {
 			if self.io_completion_pending.swap(false, Ordering::AcqRel) {
 				return Ok(());
@@ -266,20 +265,19 @@ impl NvmeDriver {
 		}
 	}
 
-	unsafe fn reset(&mut self) -> Result<(), &'static str> {
+	unsafe fn reset(&mut self) -> Result<(), KernelErrors> {
 		if self.is_enable() {
 			self.disable();
 		}
 		Ok(())
 	}
 
-	pub fn poll_ready(&mut self, timeout_units: u32) -> Result<(), &'static str> {
+	pub fn poll_ready(&mut self, timeout_units: u32) -> Result<(), KernelErrors> {
 		let mut timeout = if timeout_units > 0 { timeout_units } else { 4 } * 1000;
 		while unsafe { (mmio_read::<u32>(self.mmio_base.as_ptr(), REG_CSTS) & 1) == 0 } && timeout > 0 {
 			let csts = unsafe { mmio_read::<u32>(self.mmio_base.as_ptr(), REG_CSTS) };
 			if (csts & 0x2) != 0 {
-				kerror!("NVMe fatal error\n");
-				return Err("NVMe fatal error");
+				return Err(KernelErrors::ENODEV);
 			}
 			timeout -= 1;
 			for _ in 0..10000 {
@@ -287,13 +285,12 @@ impl NvmeDriver {
 			}
 		}
 		if timeout == 0 {
-			ksprint!("Timeout\n");
-			return Err("Timeout");
+			return Err(KernelErrors::ETIMEDOUT);
 		}
 		Ok(())
 	}
 
-	pub fn submit_admin_cmd(&mut self, cmd: NvmeCommand) -> Result<(), &'static str> {
+	pub fn submit_admin_cmd(&mut self, cmd: NvmeCommand) -> Result<(), KernelErrors> {
 		let new_tail = self.admin_sq.submit(cmd);
 		self.ring_sq_doorbell(0, new_tail);
 		loop {
@@ -307,16 +304,16 @@ impl NvmeDriver {
 		Ok(())
 	}
 
-	pub fn submit_io_cmd(&mut self, cmd: NvmeCommand) -> Result<(), &'static str> {
+	pub fn submit_io_cmd(&mut self, cmd: NvmeCommand) -> Result<(), KernelErrors> {
 		self.io_completion_pending.store(false, Ordering::Release);
 		let new_tail = self.io_sq.submit(cmd);
 		self.ring_sq_doorbell(1, new_tail);
 		Ok(())
 	}
 
-	fn check_fatal(&self) -> Result<(), &'static str> {
+	fn check_fatal(&self) -> Result<(), KernelErrors> {
 		if self.read_csts() & 2 != 0 {
-			return Err("NVMe controller fatal error");
+			return Err(KernelErrors::EIO);
 		}
 		Ok(())
 	}
@@ -342,7 +339,7 @@ impl NvmeDriver {
 		cq_phys: u64,
 		entry_count: u64,
 		vector: u16,
-	) -> Result<(), &'static str> {
+	) -> Result<(), KernelErrors> {
 		let mut cmd = NvmeCommand::zero();
 		cmd.opcode = 0x05;
 		cmd.prp1 = cq_phys;
@@ -362,7 +359,7 @@ impl NvmeDriver {
 		assoc_cqid: u16,
 		sq_phys: u64,
 		entry_count: u64,
-	) -> Result<(), &'static str> {
+	) -> Result<(), KernelErrors> {
 		let mut cmd = NvmeCommand::zero();
 		cmd.opcode = 0x01;
 		cmd.prp1 = sq_phys;
@@ -419,3 +416,4 @@ impl NvmeDriver {
 		unsafe { mmio_write(self.mmio_base.as_mut_ptr(), REG_ACQ, acq) }
 	}
 }
+

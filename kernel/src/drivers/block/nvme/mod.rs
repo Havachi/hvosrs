@@ -10,7 +10,7 @@ use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use crate::{
-	drivers::block::DeviceManager, kerror, memory::mmio::mmio_alloc, vfs::{inode::DeviceId},
+	drivers::block::DeviceManager, errno::KernelErrors, kerror, memory::mmio::mmio_alloc, vfs::inode::DeviceId,
 };
 
 pub use driver::NvmeDriver;
@@ -27,13 +27,13 @@ pub fn interrupt_service() {
 	for driver in NVME_DRIVERS.lock().iter() {
 		let mut d = driver.lock();
 		if let Err(e) = d.service_io_completions() {
-			kerror!("NVMe interrupt service error: {}", e);
+			kerror!("NVMe interrupt service error: {:?}", e);
 		}
 	}
 }
 
 /// Returns the number of block devices registered.
-pub fn probe(dev_mgr: &mut DeviceManager) -> Result<usize, &'static str> {
+pub fn probe(dev_mgr: &mut DeviceManager) -> Result<usize, KernelErrors> {
 	let before = dev_mgr.registered_count();
 	let mut driver = NvmeDriver::discover()?;
 	unsafe { driver.init()? };
@@ -42,7 +42,7 @@ pub fn probe(dev_mgr: &mut DeviceManager) -> Result<usize, &'static str> {
 	let shared = Arc::new(Mutex::new(driver));
 	register_driver(shared.clone());
 
-	let (list_buf_phys, _) = mmio_alloc(1).ok_or("Failed to allocate memory")?;
+	let (list_buf_phys, _) = mmio_alloc(1).ok_or(KernelErrors::ENOMEM)?;
 	let list = {
 		let mut d = shared.lock();
 		d.get_active_namespace(list_buf_phys)?
@@ -50,7 +50,7 @@ pub fn probe(dev_mgr: &mut DeviceManager) -> Result<usize, &'static str> {
 
 	let cntlid = shared.lock().cntlid();
 	for nsid in list {
-		let (ns_buf_phys, ns_buf_virt) = mmio_alloc(1).ok_or("Failed to allocate memory")?;
+		let (ns_buf_phys, ns_buf_virt) = mmio_alloc(1).ok_or(KernelErrors::ENOMEM)?;
 		{
 			let mut d = shared.lock();
 			d.identify_namespace(nsid, ns_buf_phys)?;

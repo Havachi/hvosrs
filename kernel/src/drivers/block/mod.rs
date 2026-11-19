@@ -41,9 +41,9 @@ impl DeviceManager {
 		self.count
 	}
 
-	pub fn register(&mut self,id: DeviceId, name: [u8; 16], device: Arc<dyn BlockDevice>) -> Result<(), &'static str> {
+	pub fn register(&mut self,id: DeviceId, name: [u8; 16], device: Arc<dyn BlockDevice>) -> Result<(), KernelErrors> {
 		if self.count >= 16 {
-			return Err("Device registry full");
+			return Err(KernelErrors::ENOMEM);
 		}
 
 		self.devices[self.count] = Some(RegisteredDevice {dev_id: id, name, device });
@@ -130,7 +130,7 @@ pub fn init() {
 			klog!("NVMe Drivers init done, found {added} drives")
 		},
 		Err(err) => {
-			kerror!("NVMe drivers init failed: {}", err)
+			kerror!("NVMe drivers init failed: {:?}", err)
 		},
 	}
 	drop(reg);

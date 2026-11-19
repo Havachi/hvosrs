@@ -1,6 +1,6 @@
 use x86_64::{PhysAddr, VirtAddr};
 
-use crate::memory::HHDM_OFFSET;
+use crate::memory::{HHDM_OFFSET, virt_to_phys_dyn};
 
 
 pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
@@ -10,7 +10,5 @@ pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
 }
 
 pub fn virt_to_phys(virt: VirtAddr) -> PhysAddr {
-	let offset = HHDM_OFFSET.lock().expect("HHDM_OFFSET not set");
-	let phys_addr = virt.as_u64() - offset;
-	PhysAddr::new(phys_addr)
+	virt_to_phys_dyn(virt).unwrap_or(PhysAddr::zero())
 }

@@ -1,7 +1,9 @@
-use alloc::sync::{Arc, Weak};
+use core::cmp::min;
+
+use alloc::{string::String, sync::{Arc, Weak}, vec};
 use bitflags::bitflags;
 
-use crate::{errno::KernelErrors, fs::ext2::{EXT2_N_BLOCKS, EXT2_ROOT_INO, superblock::Ext2Sb}, vfs::{InodeId, inode::{Inode, VfsInodeType}}};
+use crate::{errno::KernelErrors, fs::{dirent::DirentTypes, ext2::{EXT2_N_BLOCKS, EXT2_ROOT_INO, superblock::Ext2Sb}}, vfs::{InodeId, dentry::{VfsDirent, try_push_dirent}, inode::{Inode, VfsInodeType}}};
 
 
 #[repr(C, align(128))]
@@ -162,7 +164,44 @@ impl Inode for Ext2Vnode {
 	}
 
 	fn read_at(self: alloc::sync::Arc<Self>, offset: u64, buf: &mut[u8]) -> Result<usize, crate::errno::KernelErrors> {
-		todo!()
+		let sb = self.sb.upgrade().ok_or(KernelErrors::EINVAL)?;
+		let file_size = self.raw.i_size as u64;
+
+		if offset >= file_size || buf.is_empty() {
+			return Ok(0);
+		}
+
+		let max_readable = (file_size - offset) as usize;
+		let total_to_read = min(buf.len(), max_readable);
+		
+		let block_size = sb.clone().block_size() as u64;
+		let mut block_buf = vec![0u8; block_size as usize];
+		let mut bytes_read = 0usize;
+		let mut current_offset = offset;
+		while bytes_read < total_to_read {
+			let offset_in_block = (current_offset % block_size) as usize;
+			let remaining_in_block = (block_size as usize) - offset_in_block;
+			let remaining_to_read = total_to_read - bytes_read;
+
+			let chunk_len = min(remaining_in_block, remaining_to_read);
+			let dst_slice = &mut buf[bytes_read..bytes_read + chunk_len];
+
+			match sb.file_offset_to_block(&self.raw.i_block, current_offset)? {
+				Some(phys_block) => {
+					sb.read_block(phys_block, &mut block_buf)?;
+					dst_slice.copy_from_slice(
+						&block_buf[offset_in_block..offset_in_block+chunk_len]
+					);
+				}
+				None => {
+					dst_slice.fill(0);
+				}
+			}
+			bytes_read += chunk_len;
+			current_offset += chunk_len as u64 
+		}
+
+		Ok(0)
 	}
 
 	fn write_at(self: alloc::sync::Arc<Self>, offset: u64, buf: &[u8]) -> Result<usize, crate::errno::KernelErrors> {
@@ -202,10 +241,98 @@ impl Inode for Ext2Vnode {
 	}
 
 	fn getdents(&self, offset: &mut u64, max_bytes: usize) -> Result<alloc::vec::Vec<u8>, crate::errno::KernelErrors> {
-		todo!()
+
+		if !self.is_dir() {
+			return Err(KernelErrors::ENOTDIR);
+		}
+
+		let dir_size = self.len() as u64;
+		if *offset >= dir_size || max_bytes == 0 {
+			return Ok(vec::Vec::new());
+		}
+
+		let sb = self.sb.upgrade().ok_or(KernelErrors::EIO)?;
+		let block_size = sb.clone().block_size();
+		let mut list: vec::Vec<u8> = vec::Vec::new();
+		let mut block_buf = vec![0u8; block_size as usize];
+		let mut cached_block_idx: Option<u64> = None;
+		let mut cur_offset = *offset;
+		while cur_offset < dir_size {
+			let block_idx = cur_offset / block_size;
+			let in_block_off = (cur_offset % block_size) as usize;
+			if in_block_off + 8 > block_size as usize {
+				cur_offset = (block_idx + 1) * block_size;
+				continue;
+			}
+			if cached_block_idx != Some(block_idx) {
+				match sb.file_offset_to_block(&self.raw.i_block, block_idx * block_size)? {
+					Some(phys_block) => sb.read_block(phys_block as u64, &mut block_buf)?,
+					None => {
+						cur_offset = (block_idx + 1) * block_size;
+						continue;
+					}
+				}
+				cached_block_idx = Some(block_idx);
+			}
+			let hdr = &block_buf[in_block_off..in_block_off + 8];
+			let d_inode = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+			let d_size = u16::from_le_bytes([hdr[4], hdr[5]]) as usize;
+			let d_name_len = hdr[6] as usize;
+			let d_type = map_ext2_dentry_type(hdr[7]);
+
+			if d_size < 8 || in_block_off + d_size > block_size as usize {
+				return Err(KernelErrors::EIO);
+			}
+			let next_offset = cur_offset + (d_size as u64);
+			if d_inode != 0 {
+				if 8 + d_name_len > d_size {
+					return Err(KernelErrors::EIO);
+				}
+
+				let name_bytes = &block_buf[in_block_off + 8..in_block_off + 8 + d_name_len];
+				let name = String::from_utf8_lossy(name_bytes).into_owned();
+				let entry = VfsDirent::new(d_inode as u64, next_offset, d_type, name);
+				let mut dummy_idx = cur_offset;
+
+				if !try_push_dirent(&mut list, &mut dummy_idx, max_bytes, entry)?{
+					break;
+				}
+			}
+			cur_offset = next_offset;
+		}
+		*offset = cur_offset;
+		Ok(list)
 	}
 
 	fn stat(&self) -> Result<crate::vfs::Stat, crate::errno::KernelErrors> {
-		todo!()
+		let sb = self.sb.upgrade().ok_or(KernelErrors::EIO)?;
+		Ok(crate::vfs::Stat {
+			st_ino: self.ino,
+			st_blksize: sb.block_size() as i64,
+			st_blocks: self.raw.i_sect_count as i64,
+			st_nlink: 1,
+			st_size: self.raw.i_size as i64,
+			st_mode: self.raw.i_mode.bits() as u32,
+			..Default::default()
+		})
+	}
+}
+
+impl Ext2Vnode {
+
+
+	
+}
+
+fn map_ext2_dentry_type(raw_type: u8) -> DirentTypes {
+	match raw_type {
+		1 => DirentTypes::Regular,
+		2 => DirentTypes::Directory,
+		3 => DirentTypes::CharDev,
+		4 => DirentTypes::BlockDev,
+		5 => DirentTypes::FIFO,
+		6 => DirentTypes::Socket,
+		7 => DirentTypes::Symlink,
+		_ => DirentTypes::Unknown,
 	}
 }

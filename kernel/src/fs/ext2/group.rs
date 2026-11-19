@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec, vec};
-use crate::{drivers::block::BlockDevice, fs::ext2::{inode::Ext2Vnode, lba_conv, superblock::Ext2SuperblockRaw}, vfs::InodeId};
+use crate::{drivers::block::BlockDevice, errno::KernelErrors, fs::ext2::{lba_conv, superblock::Ext2SuperblockRaw}, klog, };
 
 
 
@@ -21,24 +21,29 @@ pub struct Ext2BGDT {
 }
 
 impl Ext2BGDT {
-	pub fn parse(dev: Arc<dyn BlockDevice>, rawsb: &Ext2SuperblockRaw) -> Self {
-		let total_bgd = rawsb.total_blocks / rawsb.blocks_per_group;
-		let start = lba_conv(rawsb.block_size() as u64, dev.block_size() as u64, (rawsb.super_block_id + 1) as u64);
-		let bgdt_size = total_bgd * 32;
-		let mut bgdt_nb_blocks = bgdt_size / rawsb.block_size();
-		if bgdt_nb_blocks == 0 { bgdt_nb_blocks = 1}
-		let mut buf = vec![0u8; (bgdt_nb_blocks * rawsb.block_size()) as usize];
-		let _ = dev.read_block(start, bgdt_nb_blocks, &mut buf);
-		let mut tbl: Vec<Ext2BGDRaw> = Vec::new();
-		for i in 0..total_bgd as usize {
-			let raw = &buf[i*32..i*32+32];
-			let ptr = raw.as_ptr() as *const Ext2BGDRaw;
-			let bgdraw = unsafe { ptr.read_unaligned() };
-			tbl.push(bgdraw);
-		}
-		Self {
-			table: tbl,
+	pub fn parse(dev: Arc<dyn BlockDevice>, rawsb: &Ext2SuperblockRaw) -> Result<Self, KernelErrors> {
+		const BGD_ENTRY_SIZE: usize = core::mem::size_of::<Ext2BGDRaw>();
+		let fs_blk_size = rawsb.block_size() as u64;
+		let dev_blk_size = dev.block_size() as u64;
+
+		let total_bgd = rawsb.total_blocks.div_ceil(rawsb.blocks_per_group) as usize;
+		let bgdt_byte_size = (total_bgd * BGD_ENTRY_SIZE) as u64;
+		let bgdt_fs_blocks = bgdt_byte_size.div_ceil(fs_blk_size).max(1);
+
+		let start_lba = lba_conv(fs_blk_size, dev_blk_size, (rawsb.super_block_id + 1) as u64);
+		let buf_len = (bgdt_fs_blocks * fs_blk_size) as usize;
+		let sectors_to_read = (buf_len as u64 / dev_blk_size) as u32;
+		klog!("bgdt start: {start_lba}, size: {bgdt_byte_size}, blocks: {bgdt_fs_blocks}");
+		let mut buf = vec![0u8; buf_len];
+		dev.read_block(start_lba, sectors_to_read, &mut buf)?;
+		let table = buf
+			.chunks_exact(BGD_ENTRY_SIZE)
+			.take(total_bgd)
+			.map(|chunk| unsafe { (chunk.as_ptr() as *const Ext2BGDRaw).read_unaligned() })
+			.collect();
+		Ok(Self {
+			table,
 			nb_bg: total_bgd as u64,
-		}
+		})
 	}
 }

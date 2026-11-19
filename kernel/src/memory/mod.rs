@@ -7,7 +7,7 @@ pub mod bitmap;
 use core::{sync::atomic::{AtomicU64, Ordering}};
 
 use spin::Mutex;
-use x86_64::{PhysAddr, VirtAddr, structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB, page::PageRange}};
+use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::{Mapper, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, page::PageRange}};
 
 use crate::{arch::x86_64::{paging::{self, KERNEL_MAPPER}}, klog, limine_requests::{HHDM, MEMMAP}, memory::pmm::{KERNEL_FRAME_ALLOCATOR, PhysAllocator}};
 
@@ -98,6 +98,42 @@ pub fn allocate_n_pages(n: usize) -> VirtAddr {
 	} else {
 		panic!("OOM")
 	}
+}
+
+pub fn virt_to_phys_dyn(virt: VirtAddr) -> Option<PhysAddr> {
+	let hhdm_offset = HHDM_OFFSET.lock().expect("HHDM_OFFSET not set");
+	 let v = virt.as_u64();
+	if v >= hhdm_offset && !KERNEL_DYNAMIC_MEM_RANGE.contains(v) {
+        return Some(PhysAddr::new(v - hhdm_offset));
+    }
+    let (level_4_frame, _) = Cr3::read();
+    let mut table_phys = level_4_frame.start_address().as_u64();
+
+    for level in (1..=4).rev() {
+        let table_virt = (table_phys + hhdm_offset) as *const PageTable;
+        let table = unsafe { &*table_virt };
+
+        let index = ((v >> (12 + (level - 1) * 9)) & 0x1FF) as usize;
+        let entry = &table[index];
+
+        if !entry.flags().contains(PageTableFlags::PRESENT) {
+            return None;
+        }
+
+        if level > 1 && entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            let page_mask = (1u64 << (12 + (level - 1) * 9)) - 1;
+            let phys_base = entry.addr().as_u64() & !page_mask;
+            return Some(PhysAddr::new(phys_base + (v & page_mask)));
+        }
+
+        if level == 1 {
+            return Some(PhysAddr::new(entry.addr().as_u64() + (v & 0xFFF)));
+        }
+
+        table_phys = entry.addr().as_u64();
+    }
+
+    None
 }
 
 pub struct AddrRange {
