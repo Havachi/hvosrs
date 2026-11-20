@@ -180,7 +180,7 @@ impl Inode for RamFsInode {
 		return Ok(());	
 	}
 
-	fn create(self: Arc<Self>, basename: &str) -> Result<(), KernelErrors> {
+	fn create(self: Arc<Self>, basename: &str, mode: u16) -> Result<Arc<dyn Inode>, KernelErrors> {
 		if !self.is_dir() || self.dir.is_none() {
 			return Err(ENOTDIR);
 		}
@@ -194,12 +194,12 @@ impl Inode for RamFsInode {
 		let sb = self.sb.upgrade().ok_or(KernelErrors::EIO)?;
 		let next_id = sb.alloc_inode_id();
 		let child = RamFsInode::new_file(next_id, self.id, self.sb.clone());
-		dir.insert(basename.into(), child);
+		dir.insert(basename.into(), child.clone());
 
-		Ok(())
+		Ok(child.clone())
 	}
 	
-	fn mkdir(self: Arc<Self>, basename: &str) -> Result<Arc<dyn Inode>, KernelErrors> {
+	fn mkdir(self: Arc<Self>, basename: &str, mode: u16) -> Result<Arc<dyn Inode>, KernelErrors> {
 		if !self.is_dir() || self.dir.is_none() {
 			return Err(ENOTDIR);
 		}
@@ -214,6 +214,7 @@ impl Inode for RamFsInode {
 		let sb = self.sb.upgrade().ok_or(KernelErrors::EIO)?;
 		let next_id = sb.alloc_inode_id();
 		let child = RamFsInode::new_dir(next_id, self.id, self.sb.clone());
+		
 		dir.insert(basename.into(), child.clone());
 		Ok(child)
 	}
@@ -327,22 +328,22 @@ impl VfsFilesystem for RamFs {
 	fn mount(&self, _: Option<DeviceId>) -> Result<Arc<dyn Superblock>, KernelErrors> {
 		let sb = RamfsSuperblock::new();
 		let root = sb.root();
-		root.clone().mkdir("bin")?;
-		root.clone().mkdir("boot")?;
-		root.clone().mkdir("dev")?;
-		root.clone().mkdir("etc")?;
-		root.clone().mkdir("home")?;
-		root.clone().mkdir("lib")?;
-		root.clone().mkdir("media")?;
-		root.clone().mkdir("mnt")?;
-		root.clone().mkdir("opt")?;
-		root.clone().mkdir("root")?;
-		root.clone().mkdir("run")?;
-		root.clone().mkdir("srv")?;
-		root.clone().mkdir("sys")?;
-		root.clone().mkdir("tmp")?;
-		root.clone().mkdir("usr")?;
-		root.clone().mkdir("var")?;
+		root.clone().mkdir("bin", 0o700)?;
+		root.clone().mkdir("boot", 0o700)?;
+		root.clone().mkdir("dev", 0o700)?;
+		root.clone().mkdir("etc", 0o700)?;
+		root.clone().mkdir("home", 0o700)?;
+		root.clone().mkdir("lib", 0o700)?;
+		root.clone().mkdir("media", 0o700)?;
+		root.clone().mkdir("mnt", 0o700)?;
+		root.clone().mkdir("opt", 0o700)?;
+		root.clone().mkdir("root", 0o700)?;
+		root.clone().mkdir("run", 0o700)?;
+		root.clone().mkdir("srv", 0o700)?;
+		root.clone().mkdir("sys", 0o700)?;
+		root.clone().mkdir("tmp", 0o700)?;
+		root.clone().mkdir("usr", 0o700)?;
+		root.clone().mkdir("var", 0o700)?;
 		Ok(sb)
 	}
 }

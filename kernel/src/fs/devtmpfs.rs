@@ -122,7 +122,7 @@ impl Inode for DevInode {
 
 	}
 
-	fn create(self: Arc<Self>, basename: &str) -> Result<(), KernelErrors> {
+	fn create(self: Arc<Self>, basename: &str, mode: u16) -> Result<Arc<dyn Inode>, KernelErrors> {
 		if !self.is_dir() || self.dir.is_none() {
 			return Err(ENOTDIR);
 		}
@@ -136,9 +136,9 @@ impl Inode for DevInode {
 		let sb = self.sb.upgrade().ok_or(KernelErrors::EIO)?;
 		let next_id = sb.alloc_inode_id();
 		let child = DevInode::new_file(next_id, self.id, self.sb.clone());
-		dir.insert(basename.into(), child);
+		dir.insert(basename.into(), child.clone());
 
-		Ok(())
+		Ok(child)
 	}
 
 	fn mknod(self: Arc<Self>, name: &str, mode: u16, dev_id: DeviceId) -> Result<(), KernelErrors> {
@@ -161,7 +161,7 @@ impl Inode for DevInode {
 		Ok(())
 	}
 
-	fn mkdir(self: Arc<Self>, name: &str) -> Result<Arc<dyn Inode>, KernelErrors> {
+	fn mkdir(self: Arc<Self>, name: &str, mode: u16) -> Result<Arc<dyn Inode>, KernelErrors> {
 		if !self.is_dir() || self.dir.is_none() {
 			return Err(ENOTDIR);
 		}
@@ -365,7 +365,6 @@ impl VfsFilesystem for DevTmpFs {
 	fn mount(&self, _dev: Option<DeviceId>) -> Result<Arc<dyn Superblock>, KernelErrors> {
 		let sb = DevtmpfsSuperblock::new();
 		let root = sb.root();
-		root.clone().create("test")?;
 		root.clone().mknod("null", 0o020666, DeviceId { major: 1, minor: 3 })?;
 		root.clone().mknod("zero", 0o020666, DeviceId { major: 1, minor: 5 })?;
 		Ok(sb)

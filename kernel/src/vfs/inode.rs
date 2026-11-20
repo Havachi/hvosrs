@@ -32,9 +32,9 @@ impl Display for DeviceId {
 
 pub trait Inode: Send + Sync + Debug {
 	fn lookup(self: Arc<Self>, name: &str, parent: Option<Arc<VfsDentry>>)	-> Result<Arc<VfsDentry>, KernelErrors>;
-	fn create(self: Arc<Self>, basename: &str) -> Result<(), KernelErrors>;
-	fn mknod(self: Arc<Self>, name: &str, mode: u16, dev_id: DeviceId) -> Result<(), KernelErrors>;
-	fn mkdir(self: Arc<Self>, name: &str) -> Result<Arc<dyn Inode>, KernelErrors>;
+	fn create(self: Arc<Self>, basename: &str, mode: u16) -> Result<Arc<dyn Inode>, KernelErrors>;
+	fn mknod(self: Arc<Self>, basename: &str, mode: u16, dev_id: DeviceId) -> Result<(), KernelErrors>;
+	fn mkdir(self: Arc<Self>, basename: &str, mode: u16) -> Result<Arc<dyn Inode>, KernelErrors>;
 	fn read_at(self: Arc<Self>, offset: u64, buf: &mut[u8]) -> Result<usize, KernelErrors>;
 	fn write_at(self: Arc<Self>, offset: u64, buf: &[u8]) -> Result<usize, KernelErrors>;
  	fn is_dir(&self) -> bool;
@@ -52,3 +52,17 @@ pub trait Inode: Send + Sync + Debug {
 	}
 }
 
+impl From<u8> for VfsInodeType {
+	fn from(value: u8) -> Self {
+		match value {
+			1 => VfsInodeType::FIFO,
+			2 => VfsInodeType::CharDev,
+			4 => VfsInodeType::Directory,
+			6 => VfsInodeType::BlockDev,
+			8 => VfsInodeType::Regular,
+			10 => VfsInodeType::Symlink,
+			12 => VfsInodeType::Socket,
+			_ => VfsInodeType::Unknown,
+		}
+	}
+}

@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec, vec};
-use crate::{drivers::block::BlockDevice, errno::KernelErrors, fs::ext2::{lba_conv, superblock::Ext2SuperblockRaw}, klog, };
+use crate::{drivers::block::BlockDevice, errno::KernelErrors, fs::ext2::{lba_conv, superblock::Ext2SuperblockRaw}, klog, vfs::InodeId, };
 
 
 

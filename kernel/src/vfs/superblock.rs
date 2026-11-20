@@ -17,7 +17,6 @@ pub trait Superblock: Send + Sync {
 	fn sync(&self) -> Result<(), KernelErrors>{
 		Ok(())
 	}
-
 	fn statfs(&self) -> Result<Statfs, KernelErrors>;
 	fn unmount(&self) -> Result<(), KernelErrors> {
 		self.sync()

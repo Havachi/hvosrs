@@ -142,25 +142,25 @@ pub fn sys_write(fd: i32, user_buf: u64, count: usize) -> i64 {
 	}
 }
 
-pub fn sys_open(path_ptr: u64, flags: u64, _mode: u64) -> i64 {
+pub fn sys_open(path_ptr: u64, flags: u64, mode: u64) -> i64 {
 	let path_bytes = match copy_user_cstr(path_ptr, MAX_PATH) {
 		Ok(b) => b,
 		Err(e) => {
-			kstrace!("sys_open(<invalid>, {flags}, {_mode}) = {}\n", e);
+			kstrace!("sys_open(<invalid>, {flags}, {mode}) = {}\n", e);
 			return e
 		},
 	};
 	let path = match str::from_utf8(&path_bytes) {
 		Ok(s) => s,
 		Err(_) => {
-			kstrace!("sys_open(<invalid>, {flags}, {_mode}) = {}\n", neg(KernelErrors::EINVAL));
+			kstrace!("sys_open(<invalid>, {flags}, {mode}) = {}\n", neg(KernelErrors::EINVAL));
 			return neg(KernelErrors::EINVAL)
 		},
 	};
-	let file = match vfs::open(path, flags as u32) {
+	let file = match vfs::open(path, flags as u32, mode as u16) {
 		Ok(f) => f,
 		Err(e) => {
-			kstrace!("sys_open({path}, {flags}, {_mode}) = {}\n", neg(e));
+			kstrace!("sys_open({path}, {flags}, {mode}) = {}\n", neg(e));
 			return neg(e)
 		},
 	};
@@ -175,7 +175,7 @@ pub fn sys_open(path_ptr: u64, flags: u64, _mode: u64) -> i64 {
 		None => neg(KernelErrors::EBADF),
 	};
 
-	kstrace!("sys_open({path}, {flags}, {_mode}) = {}\n", ret);
+	kstrace!("sys_open({path}, {flags}, {mode}) = {}\n", ret);
 
 	ret
 }
@@ -320,26 +320,25 @@ pub fn sys_mkdir(path_ptr: u64) -> i64 {
 		},
 	};
 
+	let result = (|| -> Result<(), KernelErrors> {
+		let parent_path = path_parent(path)?;
+		let bname = path_basename(path)?;
+		let parent_dentry = lookup(parent_path, get_cwd())?;
 
-	let parent = path_parent(path).map_err(neg);
-	if let Ok(p) = parent {
-		let parent_dentry = lookup(p, None);
-		if let Ok(p) = parent_dentry {
-			let Ok(bname) = path_basename(path) else { return neg(EINVAL);};
-			match mkdir(&p, bname) {
-				Ok(_) =>  {
-					kstrace!("mkdir({}) = 0\n", path);
-					return 0;
-				},
-				Err(err) => {
-					kstrace!("mkdir({}) = {}\n", path, neg(err));
-					return neg(err)
-				},
-			}
-		}
+		mkdir(&parent_dentry, bname, 0o777)?;
+		Ok(())
+	})();
+
+	match result {
+		Ok(()) =>  {
+			kstrace!("mkdir({}) = 0\n", path);
+			return 0;
+		},
+		Err(err) => {
+			kstrace!("mkdir({}) = {}\n", path, neg(err));
+			return neg(err)
+		},
 	}
-	0
-
 }
 
 pub fn sys_fork(frame: &mut SyscallFrame) -> i64 {
@@ -361,10 +360,10 @@ pub fn sys_fork(frame: &mut SyscallFrame) -> i64 {
 
 pub fn sys_execve(path_ptr: u64, _argv: u64, _envp: u64, frame: &mut SyscallFrame) -> i64 {
 	x86_64::instructions::interrupts::without_interrupts(|| {
-
 		let path_bytes = copy_user_cstr(path_ptr, MAX_PATH).map_err(|_| KernelErrors::EINVAL)?;
 		let path = str::from_utf8(&path_bytes).map_err(|_| KernelErrors::EINVAL)?;
-		let mut file = vfs::open(path, VfsFileOpenflags::O_RDONLY.bits())?;
+		//TODO send something else that 777 for the mode
+		let mut file = vfs::open(path, VfsFileOpenflags::O_RDONLY.bits(), 0o777)?;
 		let elf_buf =  vfs::read_file_all(&mut file)?;
 		let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed) as usize;
 
@@ -578,7 +577,7 @@ fn sys_getdents_inner(fd: u64, dirp: u64, count: u64) -> Result<i64, KernelError
 
 }
 
-pub fn sys_openat(dfd: u64, path_ptr: u64, flags: u64, _mode: u64) -> i64 {
+pub fn sys_openat(dfd: u64, path_ptr: u64, flags: u64, mode: u64) -> i64 {
 	let path_bytes = match copy_user_cstr(path_ptr, MAX_PATH) {
 		Ok(b) => b,
 		Err(e) => return e,
@@ -593,7 +592,7 @@ pub fn sys_openat(dfd: u64, path_ptr: u64, flags: u64, _mode: u64) -> i64 {
 	if !is_absolute(path) && dfd != AT_FDCWD as u64 {
 		return neg(KernelErrors::EBADF);
 	} else{
-		let file = match vfs::open(path, flags as u32) {
+		let file = match vfs::open(path, flags as u32, mode as u16) {
 			Ok(f) => f,
 			Err(e) => return neg(e),
 		};

@@ -64,12 +64,12 @@ pub fn lookup(path: &str, cwd: Option<Arc<VfsDentry>>) -> Result<Arc<VfsDentry>,
 	path_walk(path, root, cwd)
 }
 
-pub fn mkdir(parent_dentry: &Arc<VfsDentry>, basename: &str) -> Result<Arc<VfsDentry>, KernelErrors> {
+pub fn mkdir(parent_dentry: &Arc<VfsDentry>, basename: &str, mode: u16) -> Result<Arc<VfsDentry>, KernelErrors> {
 	let parent_inode = parent_dentry.inode.clone();
 	if !parent_inode.is_dir() {
 		return Err(KernelErrors::ENOTDIR);
 	}
-	let child_inode = parent_inode.mkdir(basename)?;
+	let child_inode = parent_inode.mkdir(basename, mode)?;
 	let child_dentry = Arc::new(VfsDentry::from_name(
 		basename,
 		child_inode,
@@ -79,14 +79,20 @@ pub fn mkdir(parent_dentry: &Arc<VfsDentry>, basename: &str) -> Result<Arc<VfsDe
 	Ok(child_dentry)
 }
 
-pub fn create(path: &str) -> Result<(), KernelErrors> {
+pub fn create(path: &str, mode: u16) -> Result<Arc<VfsDentry>, KernelErrors> {
 	let parent = path_parent(path)?;
 	let basename = path_basename(path)?;
 	let parent_dentry = lookup(parent, get_cwd())?;
 	if !parent_dentry.inode.is_dir() {
 		return Err(KernelErrors::ENOTDIR);
 	}
-	parent_dentry.inode.clone().create(basename)
+
+	let child = parent_dentry.inode.clone().create(basename, mode)?;
+	Ok(Arc::new(VfsDentry::from_name(
+		path_basename(path)?,
+		child,
+		Some(parent_dentry)
+	)?))
 }
 
 pub fn mkdev(path: &str, mode: u16, device_id: DeviceId) -> Result<(), KernelErrors> {
@@ -105,7 +111,7 @@ pub fn mkdev(path: &str, mode: u16, device_id: DeviceId) -> Result<(), KernelErr
 	Ok(())
 }
 
-pub fn open(path: &str, flags: u32) -> Result<VfsFile, KernelErrors> {
+pub fn open(path: &str, flags: u32, mode: u16) -> Result<VfsFile, KernelErrors> {
 	let vfs_flags = VfsFileOpenflags::from_bits_truncate(flags);
 	let dentry = match lookup(path, get_cwd()) {
 		Ok(dentry) => {
@@ -127,7 +133,7 @@ pub fn open(path: &str, flags: u32) -> Result<VfsFile, KernelErrors> {
 		},
 		Err(err) if err == KernelErrors::ENOENT && vfs_flags.contains(VfsFileOpenflags::O_CREAT) => {
 			//file not exists but flags O_CREAT
-			create(path)?;
+			create(path, mode)?;
 			match lookup(path, get_cwd()) {
 				Ok(dentry) => dentry,
 				Err(err) => return Err(err),

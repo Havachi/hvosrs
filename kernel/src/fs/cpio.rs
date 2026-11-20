@@ -138,7 +138,7 @@ pub fn load_initrd(initrd_slice: &[u8]) -> Result<(), KernelErrors> {
 
 		match file_type {
 			S_IFDIR => {
-				match vfs::mkdir(&parent_dentry, entry_name) {
+				match vfs::mkdir(&parent_dentry, entry_name, 0o751) {
                     Ok(_) | Err(KernelErrors::EEXIST) => {}
                     Err(e) => return Err(e)
                 }
@@ -148,14 +148,14 @@ pub fn load_initrd(initrd_slice: &[u8]) -> Result<(), KernelErrors> {
                     let grand_parent_path = path_parent(parent)?;
                     let grand_parent_dentry = vfs::lookup(grand_parent_path, None)?;
                     let dir_name = parent.rsplit_once('/').map(|(_, name)| name).unwrap_or(parent);
-                    match vfs::mkdir(&grand_parent_dentry, dir_name) {
+                    match vfs::mkdir(&grand_parent_dentry, dir_name, 0o751) {
                         Ok(_) | Err(KernelErrors::EEXIST) => {}
                         Err(e) => return Err(e),
                     }
 				}
                 
-				vfs::create(path)?;
-				let mut file = vfs::open(path,VfsFileOpenflags::O_RDWR.bits())?;
+				vfs::create(path,0o751)?;
+				let mut file = vfs::open(path,VfsFileOpenflags::O_RDWR.bits(), 0o751)?;
 				vfs::write(&mut file, entry.data)?;
 			}
 			_ => {

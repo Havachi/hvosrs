@@ -1,7 +1,7 @@
 use core::ops::Add;
 use x86_64::VirtAddr;
 
-use crate::errno::KernelErrors;
+use crate::{errno::KernelErrors, kerror};
 
 use super::protocol::{CompletionQueueEntry, NvmeCommand};
 
@@ -61,6 +61,7 @@ impl CompletionQueue {
 		}
 		let sc = cqe.status_code();
 		if sc != 0 {
+			kerror!("nvme: op failed: sc {sc}");
 			return Err(KernelErrors::EIO);
 		}
 		self.head += 1;

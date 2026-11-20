@@ -212,11 +212,11 @@ impl NvmeDriver {
 	}
 
 	pub fn submit_io_read(&mut self, nsid: u32, lba: u64, count: u32, buf_phys: u64) -> Result<(), KernelErrors> {
-		self.submit_io_nvm(0x02, nsid, lba, count, buf_phys).map_err(|_| KernelErrors::EIO)
+		self.submit_io_nvm(0x02, nsid, lba, count, buf_phys)
 	}
 
 	pub fn submit_io_write(&mut self, nsid: u32, lba: u64, count: u32, buf_phys: u64) -> Result<(), KernelErrors> {
-		self.submit_io_nvm(0x01, nsid, lba, count, buf_phys).map_err(|_| KernelErrors::EIO)
+		self.submit_io_nvm(0x01, nsid, lba, count, buf_phys)
 	}
 
 	fn submit_io_nvm(

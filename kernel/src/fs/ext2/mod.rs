@@ -1,6 +1,6 @@
 use alloc::{boxed::Box, sync::Arc};
 
-use crate::{drivers::block::DEV_MGR, errno::KernelErrors, fs::ext2::{group::Ext2BGDT, superblock::{Ext2Sb, Ext2SuperblockRaw}}, vfs::{InodeId, filesystem::{VfsFilesystem, vfs_register_filesystem}, inode::DeviceId}};
+use crate::{drivers::block::DEV_MGR, errno::KernelErrors, fs::ext2::{group::Ext2BGDT, superblock::{Ext2Sb, Ext2SuperblockRaw}}, ksprint, vfs::{InodeId, filesystem::{VfsFilesystem, vfs_register_filesystem}, inode::DeviceId}};
 
 pub mod superblock;
 pub mod group;
@@ -40,8 +40,9 @@ impl VfsFilesystem for Ext2Fs {
 		let devmgr = DEV_MGR.lock();
 		let blkdev = devmgr.find_by_id(dev.ok_or(KernelErrors::ENODEV)?).ok_or(KernelErrors::ENODEV)?;
 		let sbraw = Ext2SuperblockRaw::from_blkdev(blkdev.clone())?;
-		
+		ksprint!("got the raw sb\n");
 		let bgdt = Ext2BGDT::parse(blkdev.clone(), &sbraw)?;
+		ksprint!("got the bgdt\n");
 		Ext2Sb::new(blkdev, sbraw, bgdt)
 	}
 }

@@ -84,17 +84,27 @@ pub fn errno_to_str(err: i64) -> &'static str {
 	match err {
 		-1 => "Permission Denied",
 		-2 => "No such file or directory",
+		-3 => "No such process",
+		-4 => "Interrupted system call",
+		-5 => "Input/Output error",
 		-9 => "Bad file descriptor",
 		-10 => "No child processes",
 		-11 => "Resource temporarily unavailable",
 		-12 => "Cannot allocate memory",
 		-13 => "Permission Denied",
 		-14 => "Bad address",
+		-15 => "Block device required",
 		-16 => "Ressource or device busy",
 		-17 => "File Exist",
+		-19 => "No such device",
 		-20 => "Not a directory",
 		-21 => "Is a directory",
 		-22 => "Invalid argument",
+		-27 => "File too large",
+		-28 => "No space left on device",
+		-38 => "Function not implemented",
+		-62 => "Timer expired",
+		-110 => "Connection timed out",
 		_ => "unknown error"
 	}
 }
