@@ -16,5 +16,6 @@ pub const SYS_GETDENTS: u64 = 78;
 pub const SYS_CHDIR: u64 = 80;
 pub const SYS_MKDIR: u64 = 83;
 pub const SYS_MOUNT: u64 = 165;
+pub const SYS_CLOCK_GETTIME: u64 = 228;
 pub const SYS_WAITID: u64 = 247;
 pub const SYS_OPENAT: u64 = 257;

@@ -33,7 +33,6 @@ impl Ext2BGDT {
 		let start_lba = lba_conv(fs_blk_size, dev_blk_size, (rawsb.super_block_id + 1) as u64);
 		let buf_len = (bgdt_fs_blocks * fs_blk_size) as usize;
 		let sectors_to_read = (buf_len as u64 / dev_blk_size) as u32;
-		klog!("bgdt start: {start_lba}, size: {bgdt_byte_size}, blocks: {bgdt_fs_blocks}");
 		let mut buf = vec![0u8; buf_len];
 		dev.read_block(start_lba, sectors_to_read, &mut buf)?;
 		let table = buf

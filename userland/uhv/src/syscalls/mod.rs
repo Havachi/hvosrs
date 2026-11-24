@@ -5,7 +5,7 @@ use macros::*;
 mod rax;
 use rax::*;
 
-use crate::Stat;
+use crate::{Stat, SysTime};
 
 pub fn read(fd: i64, buf: &mut [u8]) -> i64 {
 	unsafe { syscall3(SYS_READ, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64) }
@@ -112,3 +112,7 @@ fn path_cstr(path: &str) -> alloc::vec::Vec<u8> {
 	buf
 }
 
+pub fn sys_clock_gettime(which: u64, dt: &mut SysTime) {
+	let dt_ptr = dt as *mut SysTime as u64;
+	unsafe { syscall2(SYS_CLOCK_GETTIME, which, dt_ptr) };
+}

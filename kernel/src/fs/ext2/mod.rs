@@ -40,9 +40,7 @@ impl VfsFilesystem for Ext2Fs {
 		let devmgr = DEV_MGR.lock();
 		let blkdev = devmgr.find_by_id(dev.ok_or(KernelErrors::ENODEV)?).ok_or(KernelErrors::ENODEV)?;
 		let sbraw = Ext2SuperblockRaw::from_blkdev(blkdev.clone())?;
-		ksprint!("got the raw sb\n");
 		let bgdt = Ext2BGDT::parse(blkdev.clone(), &sbraw)?;
-		ksprint!("got the bgdt\n");
 		Ext2Sb::new(blkdev, sbraw, bgdt)
 	}
 }

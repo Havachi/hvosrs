@@ -7,10 +7,7 @@ use x86_64::{
 };
 
 use crate::{
-	arch::x86_64::paging::{KERNEL_PML4, switch_pml4},
-	errno::KernelErrors,
-	memory::{PAGE_SIZE, USER_RANGE, vmm::phys_to_virt},
-	syscalls::errno::EFAULT,
+	arch::x86_64::paging::{KERNEL_PML4, switch_pml4}, drivers::keyboard::key::KeyCode::I, errno::KernelErrors, memory::{PAGE_SIZE, USER_RANGE, vmm::phys_to_virt}, syscalls::errno::EFAULT,
 };
 
 static SYSCALL_USER_CR3: AtomicU64 = AtomicU64::new(0);
@@ -195,6 +192,25 @@ pub fn copy_to_user(dst: u64, src: &[u8]) -> Result<(), i64> {
 			core::ptr::copy_nonoverlapping(src.as_ptr().add(offset), host, chunk);
 		}
 		offset += chunk;
+	}
+	Ok(())
+}
+
+pub fn write_user<T: Copy>(user_ptr: *mut T, value: T) -> Result<(), KernelErrors> {
+	if user_ptr.is_null() {
+		return Err(KernelErrors::EFAULT);
+	}
+
+	if !(user_ptr as usize).is_multiple_of(core::mem::align_of::<T>()) {
+		return Err(KernelErrors::EFAULT);
+	}
+
+	if !user_range_ok(user_ptr as u64, core::mem::size_of::<T>()) {
+		return Err(KernelErrors::EFAULT);
+	}
+
+	unsafe {
+		core::ptr::write_volatile(user_ptr, value);
 	}
 	Ok(())
 }

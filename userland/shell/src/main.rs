@@ -107,6 +107,7 @@ fn repl(env: &mut Env, buf: &Vec<u8>) -> Result<(), i64> {
 		"mkdir" => mkdir_wrapper(&parsed)?,
 		"mkfs" => mkfs(&parsed)?,
 		"mount" => builtins::mount(&parsed)?,
+		"now" => now(),
 		"pwd" => pwd(env)?,
 		_ => {
 			if parsed[0].contains('=') {
@@ -137,6 +138,7 @@ fn repl(env: &mut Env, buf: &Vec<u8>) -> Result<(), i64> {
 	}
 	Ok(())
 }
+
 
 fn split_cmd(buf: &Vec<u8>) -> Result<(String, Vec<String>), i64>{
 

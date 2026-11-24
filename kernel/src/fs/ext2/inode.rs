@@ -290,7 +290,13 @@ impl Inode for Ext2Vnode {
 		let dir_block = sb.clone().alloc_block(preferred_bg)?;
 
 		let mut dir_buf = alloc::vec![0u8; block_size];
-		write_raw_dentry(&mut dir_buf[0..12], new_ino as u32, 12, 2, b".");
+		write_raw_dentry(
+			&mut dir_buf[0..12],
+			new_ino as u32,
+			12,
+			2,
+			b"."
+		);
 		write_raw_dentry(
 			&mut dir_buf[12..block_size], 
 			self.ino as u32, 
@@ -298,6 +304,7 @@ impl Inode for Ext2Vnode {
 			VfsInodeType::Directory as u8, 
 			b".."
 		);
+		
 		sb.clone().write_block(dir_block as u64, &dir_buf)?;
 
 		let mut raw_inode = Ext2InodeRaw {

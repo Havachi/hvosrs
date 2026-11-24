@@ -4,8 +4,13 @@
 pub mod heap;
 mod syscalls;
 mod files;
+use core::time::Duration;
+
+use alloc::boxed::Box;
 pub use files::*;
 pub use syscalls::*;
+
+use crate::time::{DateTime, UnixTime};
 
 extern crate alloc;
 pub const O_CREAT: u64 = 0o100;
@@ -109,3 +114,193 @@ pub fn errno_to_str(err: i64) -> &'static str {
 	}
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SysTime {
+	pub millis: u64
+}
+
+pub fn now() {
+	let mut time = SysTime { ..Default::default() }; 
+	sys_clock_gettime(0, &mut time);
+	let unix = UnixTime::from(time) + Duration::from_secs_f32(2.0);
+	let dt = DateTime::from_unixtime(unix);
+	println!("{}",dt)
+}
+
+impl From<SysTime> for UnixTime {
+	fn from(value: SysTime) -> Self {
+		Self { ms: value.millis }
+	}
+}
+
+mod time {
+    use core::{fmt::Display, ops::{Add, Sub}};
+
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+	pub struct YMD {
+		year: i64,
+		month: u8,
+		day: u8,
+	}
+
+	#[repr(u8)]
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+	pub enum Weekday {
+		Monday		= 0,
+		Tuesday		= 1,
+		Wednesday	= 2,
+		Thursday	= 3,
+		Friday		= 4,
+		Saturday	= 5,
+		Sunday		= 6,
+	}
+
+	impl From<u8> for Weekday {
+		fn from(value: u8) -> Self {
+			match value % 7 {
+				0 => Self::Monday,
+				1 => Self::Tuesday,
+				2 => Self::Wednesday,
+				3 => Self::Thursday,
+				4 => Self::Friday,
+				5 => Self::Saturday,
+				_ => Self::Sunday,
+			}
+		}
+	}
+
+	#[repr(u8)]
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+	pub enum Month {
+		January=1, February, March, April,
+		May, June, July, August,
+		September, October, November, December
+	}
+
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+	pub struct LocalDate {
+		ymd: YMD,
+		yearday: i16,
+		weekday: Weekday
+	}
+
+	impl LocalDate {
+		pub fn from_unixtime(unixtime: UnixTime) -> Self {
+			let z_orig: u64 = unixtime.ms.div_euclid(MILLI_PER_DAY);
+			let weekday = Weekday::from((z_orig + 4).rem_euclid(7) as u8);
+			let z = z_orig + 719468;
+			let era = z.div_euclid(146097);
+			let doe = z - era * 146097;
+			let yoe = (doe - doe.div_euclid(1460) + doe.div_euclid(36524) - doe.div_euclid(146096))
+				.div_euclid(365);
+			let y = yoe + era * 400;
+			let doy = doe - (365 * yoe + yoe.div_euclid(4) - yoe.div_euclid(100));
+			let mp = (5 * doy + 2).div_euclid(153);
+			let d = doy - (153 * mp + 2).div_euclid(5) + 1;
+			let m = if mp < 10 { mp + 3 } else { mp - 9 };
+			let year = if m <= 2 { y + 1 } else { y };
+
+			let is_leap = ((year % 4 == 0) && (year % 100 != 0 || year % 400 == 0)) as u64;
+			let yearday = if m <= 2 {
+				doy - 305
+			} else {
+				doy + 60 + is_leap
+			};
+
+			Self {
+				ymd: YMD {
+					year: year as i64,
+					month: m as u8,
+					day: d as u8,
+				},
+				weekday,
+				yearday: yearday as i16,
+			}
+		}
+	}
+
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+	pub struct LocalTime {
+		hour: i8,
+		minute: i8,
+		second: i8,
+		millisecond: i16,
+	}
+
+	impl LocalTime {
+		pub fn from_unixtime(unixtime: UnixTime) -> Self {
+			let total_sec = unixtime.ms.div_euclid(MILLI_PER_SEC);
+			let day_sec = total_sec.rem_euclid(SEC_PER_DAY);
+
+			Self {
+				hour: day_sec.div_euclid(SEC_PER_HOURS) as i8,
+				minute: day_sec.rem_euclid(SEC_PER_HOURS).div_euclid(SEC_PER_MIN) as i8,
+				second: day_sec.rem_euclid(SEC_PER_MIN) as i8,
+				millisecond: unixtime.ms.rem_euclid(MILLI_PER_SEC) as i16,
+			}
+		}
+	}
+
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+	pub struct DateTime {
+		date: LocalDate,
+		time: LocalTime,
+	}
+
+	impl DateTime {
+		pub fn from_unixtime(unixtime: UnixTime) -> Self {
+			
+			Self {
+				date: LocalDate::from_unixtime(unixtime),
+				time: LocalTime::from_unixtime(unixtime),
+			}
+
+		}
+	}
+
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+	pub struct UnixTime {
+		pub ms: u64,
+	}
+
+	impl Add<core::time::Duration> for UnixTime {
+		type Output = UnixTime;
+		fn add(mut self, rhs: core::time::Duration) -> Self::Output {
+			self.ms = self.ms.saturating_add(rhs.as_millis() as u64);
+			self
+		}
+	}
+
+	impl Sub<core::time::Duration> for UnixTime {
+		type Output = UnixTime;
+		fn sub(mut self, rhs: core::time::Duration) -> Self::Output {
+			self.ms = self.ms.saturating_sub(rhs.as_millis() as u64);
+			self
+		}
+	}
+	
+	impl Display for YMD {
+		fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+			write!(f, "{:02}/{:02}/{:02}", self.day, self.month, self.year)
+		}
+	}
+
+	impl Display for LocalTime {
+		fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+			write!(f, "{:02}:{:02}:{:02}.{:03}", self.hour, self.minute, self.second, self.millisecond)
+		}
+	}
+	impl Display for DateTime {
+		fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+			write!(f, "{:?} {} {}", self.date.weekday, self.date.ymd, self.time)
+		}
+	}
+
+	pub const MILLI_PER_SEC: u64 = 1000;
+	pub const SEC_PER_MIN: u64 = 60;
+	pub const SEC_PER_HOURS: u64 = SEC_PER_MIN * SEC_PER_MIN;
+	pub const SEC_PER_DAY: u64 = SEC_PER_HOURS * 24;
+	pub const SEC_PER_WEEK: u64 = SEC_PER_DAY * 7;
+	pub const MILLI_PER_DAY: u64 = 24 * 60 * 60 * 1000;
+}

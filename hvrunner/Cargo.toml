@@ -22,7 +22,7 @@ run-args = [
 	"-smp", "4",
 	#"-drive", "file=nvme.qcow2,if=none,id=nvm",
 	#"-device", "nvme,drive=nvm,serial=B16B00B5",
-	
+	"-rtc", "base=utc,clock=host",
 	"-drive", "file=nvmeext2.qcow2,if=none,id=nvm2",
 	"-device", "nvme,drive=nvm2,serial=B16B00B6",
 	"--trace", "pci_nvme*"

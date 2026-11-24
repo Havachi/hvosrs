@@ -1,12 +1,13 @@
-use core::str;
+use core::{cmp::Ordering, str};
 
 
+use alloc::slice;
 use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
 
 use crate::{
 	arch::x86_64::{paging::{map_phys_page, switch_pml4}, syscall::SyscallFrame}, drivers::{console, io::getchar}, errno::KernelErrors::{self, EAGAIN, EINVAL}, kstrace, memory::{PAGE_SIZE, USER_HEAP_RANGE, pmm::PhysAllocator}, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, block_current, process::{self, find_zombie, fork_child_from, get_cwd, has_waitable_child, reap}, schedule, with_current_process}, syscalls::{
-		errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr},
-	}, vfs::{self, SeekOrigin, file::{AT_FDCWD, VfsFileOpenflags}, get_root_dentry, lookup, mkdir, path::{is_absolute, path_basename, path_parent, path_walk}},
+		errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr, write_user},
+	}, time::{BOOT_EPOCH, EPOCH, SysTime}, vfs::{self, SeekOrigin, file::{AT_FDCWD, VfsFileOpenflags}, get_root_dentry, lookup, mkdir, path::{is_absolute, path_basename, path_parent, path_walk}},
 };
 
 pub const SYS_READ: usize = 0;
@@ -27,6 +28,7 @@ pub const SYS_GETDENTS: usize = 78;
 pub const SYS_CHDIR: usize = 80;
 pub const SYS_MKDIR: usize = 83;
 pub const SYS_MOUNT: usize = 165;
+pub const SYS_CLOCK_GETTIME: usize = 228;
 pub const SYS_WAITID: usize = 247;
 pub const SYS_OPENAT: usize = 257;
 
@@ -650,4 +652,27 @@ pub fn sys_mount(dev_name_ptr: u64, dir_name_ptr: u64, fs_type_ptr: u64, flags: 
 	}
 	kstrace!("mount({devname}, {dirname}) => 0\n");
 	0
+}
+
+pub fn sys_clock_gettime(which: u64, dt: u64) -> i64 {
+	if dt == 0 {
+		return neg(KernelErrors::EINVAL);
+	}
+
+	let ms = match which {
+		0 => EPOCH.load(core::sync::atomic::Ordering::Acquire),
+		1 => EPOCH.load(core::sync::atomic::Ordering::Acquire)
+			.saturating_sub(BOOT_EPOCH.load(core::sync::atomic::Ordering::Acquire)),
+		_ => return neg(KernelErrors::EINVAL),
+	};
+	let systime = SysTime { millis: ms };
+
+	let bytes = unsafe {
+		slice::from_raw_parts((&systime as *const SysTime).cast::<u8>(), size_of::<SysTime>())
+	};
+
+	match copy_to_user(dt, bytes) {
+		Ok(()) => 0,
+		Err(err) => err
+	}
 }

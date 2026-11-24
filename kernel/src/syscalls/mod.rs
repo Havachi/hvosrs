@@ -40,6 +40,7 @@ const fn make_table() -> [SyscallFn; NR_SYSCALLS] {
 	t[SYS_CHDIR] = |_,path,_,_,_,_,_| sys_chdir(path);
 	t[SYS_MKDIR] = |_,path,_,_,_,_,_| sys_mkdir(path);
 	t[SYS_MOUNT] = |_, dev_name, dir_name, mtype, flags, data,_| sys_mount(dev_name, dir_name, mtype, flags, data);
+	t[SYS_CLOCK_GETTIME] = |_,which,dt,_,_,_,_| sys_clock_gettime(which, dt);
 	t[SYS_WAITID] = |_,idtype,id,infop,option,_,f| sys_waitid(idtype, id, infop, option, f);
 	t[SYS_OPENAT] = |_,dfd, path_ptr, flags, mode, _,_| sys_openat(dfd, path_ptr, flags, mode);
 	t

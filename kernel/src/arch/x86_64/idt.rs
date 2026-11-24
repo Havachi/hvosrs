@@ -3,7 +3,7 @@ use core::arch::asm;
 use lazy_static::lazy_static;
 use x86_64::{PhysAddr, VirtAddr, structures::{idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode}, paging::Translate}};
 
-use crate::{arch::x86_64::paging::KERNEL_MAPPER, drivers::acpi::LAPIC, klog, kpanic, ksprint, memory::{HHDM_OFFSET, KERNEL_DYNAMIC_MEM_RANGE, vmm::phys_to_virt}, scheduler::reschedule};
+use crate::{arch::x86_64::paging::KERNEL_MAPPER, drivers::acpi::LAPIC, interrupts::PIT_HZ, klog, kpanic, ksprint, memory::{HHDM_OFFSET, KERNEL_DYNAMIC_MEM_RANGE, vmm::phys_to_virt}, scheduler::reschedule, time::tick_from_pit_hz};
 
 pub const TIMER_INT_VECTOR: u8 = 0x32;
 pub const KEYBOARD_INT_VECTOR: u8 = 0x33;
@@ -200,7 +200,8 @@ extern "x86-interrupt" fn breakpoint_handler(
 extern "x86-interrupt" fn idt_timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
 	crate::scheduler::tick();
 	crate::interrupts::timer_interrupt_handler();
-
+	tick_from_pit_hz(PIT_HZ as u64);
+	
 	if let Some(lapic) = LAPIC.lock().as_mut() {
 		unsafe { 
 			lapic.eoi();

@@ -180,7 +180,6 @@ impl Ext2SuperblockRaw {
 		if blksz <= 1024 {
 			let lba = (1024 / blksz) as u64;
 			let count = 1024 / blksz;
-			klog!("fromblkdev: lba:{}, count:{}, blksz:{}", lba, count, blksz);
 			blkdev.read_block(lba, count, &mut raw)?; 
 		} else {
 			let mut sect = alloc::vec![0u8; blksz as usize];
@@ -197,7 +196,6 @@ impl Ext2SuperblockRaw {
 		};
 		let magic = sb.magic;
 		if magic != 0xEF53 {
-			kerror!("ext2: invalid magic found: {magic}\n");
 			return Err(KernelErrors::EINVAL);
 		}
 		Ok(sb)
@@ -458,9 +456,6 @@ impl Ext2Sb {
 				blkbuf.as_ptr().add(offset_in_block) as *const Ext2InodeRaw,
 			)
 		};
-
-		klog!("ext2 root ino type: {:#x}", inode.i_mode);
-
 		Ok(inode)
 	}
 

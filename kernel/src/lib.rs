@@ -18,6 +18,8 @@ pub mod errno;
 pub mod fs;
 pub mod vfs;
 pub mod structures;
+pub mod time;
+pub mod cmos;
 
 pub mod limine_requests {
 	use limine::{BaseRevision, RequestsEndMarker, RequestsStartMarker, request::*};
