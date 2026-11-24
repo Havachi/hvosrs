@@ -3,7 +3,7 @@ use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::{
-	drivers::block::{BlockDevice, nvme::driver::NvmeDriver}, errno::KernelErrors, kerror, kprint, ksprint, memory::{PAGE_SIZE, mmio::mmio_alloc},
+	drivers::block::{BlockDevice, nvme::driver::NvmeDriver}, errno::KernelErrors, memory::{PAGE_SIZE, mmio::mmio_alloc},
 };
 #[derive(Clone)]
 pub struct NvmeNamespace {

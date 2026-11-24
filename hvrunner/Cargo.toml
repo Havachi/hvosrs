@@ -25,5 +25,6 @@ run-args = [
 	"-rtc", "base=utc,clock=host",
 	"-drive", "file=nvmeext2.qcow2,if=none,id=nvm2",
 	"-device", "nvme,drive=nvm2,serial=B16B00B6",
-	"--trace", "pci_nvme*"
+	"--trace", "pci_nvme*",
+	"-no-reboot", "-no-shutdown", "-d","int"
 ]

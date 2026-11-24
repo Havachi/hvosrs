@@ -1,7 +1,7 @@
 
 use core::sync::atomic::AtomicU32;
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
 
 use crate::{arch::x86_64::{
@@ -14,13 +14,8 @@ use crate::{arch::x86_64::{
 		new_page_table,
 		switch_pml4
 	},
-	syscall::{SyscallFrame, fork_child_return}},
-	elf::load_elf,
-	errno::KernelErrors, klog, ksprint,
-	memory::{KERNEL_DYNAMIC_MEM_START, PAGE_SIZE, USER_HEAP_START, USER_RANGE_END, allocate_n_pages,
-	pmm::{KERNEL_FRAME_ALLOCATOR, PhysAllocator, get_used_frames}},
-	scheduler::{CURRENT_KSTACK_TOP, CURRENT_PID, MAX_PROCESS, PROCESS_TABLE, Priority, exit_to_user},
-	vfs::{dentry::VfsDentry, file::VfsFile}
+	syscall::{SyscallFrame, fork_child_return}}, elf::load_elf, errno::KernelErrors, klog, ksprint, memory::{PAGE_SIZE, USER_HEAP_START, USER_RANGE_END, allocate_n_pages,
+	pmm::{KERNEL_FRAME_ALLOCATOR, PhysAllocator, get_used_frames}, virt_to_phys_dyn}, scheduler::{CURRENT_KSTACK_TOP, CURRENT_PID, MAX_PROCESS, PROCESS_TABLE, Priority, exit_to_user}, syscalls::push_args_to_user_stack, vfs::{dentry::VfsDentry, file::VfsFile}
 };
 
 pub type ProcessId = u32;
@@ -101,64 +96,21 @@ impl Process {
 	) -> Process {
 
 		let user_stack_nb_pages = PROCESS_BASE_NB_PAGE;
-		let user_stack_phys  = match PhysAllocator::allocate_n_frame(user_stack_nb_pages) {
-			Some(p) => p,
-			None => panic!("OOM while creating a new process")
-		};
+		let stack_top = map_user_stack_in_current_cr3(user_stack_nb_pages)
+			.expect("Failed to map user stack while creating process");
+		// `stack_top` is the first unmapped address above the stack. `_start` reads
+		// `[rsp]`, so the entry rsp has to sit inside the mapped page.
+		let user_rsp = write_empty_argv_frame(stack_top);
 
-		let user_stack_page = Page::<Size4KiB>::containing_address(
-			VirtAddr::new(USER_RANGE_END - (user_stack_nb_pages * PAGE_SIZE) as u64)
+		let (krsp, kstack_top) = kernel_stack_bootstrap(
+			user_rsp,
+			entry_point as u64,
+			exit_to_user as *const () as u64
 		);
-
-		if user_stack_nb_pages > 1 {
-			for i in 0..user_stack_nb_pages {
-
-				let page = Page::<Size4KiB>::containing_address(
-					VirtAddr::new(USER_RANGE_END - (PAGE_SIZE * i) as u64)
-				);
-				let frame = PhysFrame::<Size4KiB>::containing_address(user_stack_phys + (PAGE_SIZE * i) as u64);
-				unsafe { let _ = map_phys_page(
-					page,
-					frame, 
-					PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE, 
-					&mut PhysAllocator,
-				); };
-
-			}
-		} else {
-			let frame = PhysFrame::<Size4KiB>::containing_address(user_stack_phys);
-			unsafe { let _ = map_phys_page(
-				user_stack_page,
-				frame, 
-				PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE, 
-				&mut PhysAllocator,
-			); };
-		}
-
-		let user_rsp = user_stack_page.start_address().as_u64() + (PAGE_SIZE * user_stack_nb_pages) as u64;
-	
-		let kernel_stack_nb_pages = KERNEL_STACK_DEFAULT_NB_PAGES;
-		let kernel_stack_buffer_addr = allocate_n_pages(kernel_stack_nb_pages);
-		let kernel_stack_base = kernel_stack_buffer_addr.as_u64() as usize;
-		let kernel_stack_top = kernel_stack_buffer_addr.as_u64() + (PAGE_SIZE * kernel_stack_nb_pages) as u64;
-		let mut ksp = (kernel_stack_base + PAGE_SIZE) as *mut u64;
-
-		unsafe {
-			ksp = ksp.offset(-1);
-			*ksp = user_rsp;
-			ksp = ksp.offset(-1);
-			*ksp = entry_point as u64;
-			ksp = ksp.offset(-1);
-			*ksp = exit_to_user as *const () as u64;
 		
-			for _ in 0..16 {
-				ksp = ksp.offset(-1);
-				*ksp = 0;
-			}
-		}
 		let fd_table = [const {None}; MAX_FD_PER_PROCESS];
-
 		let root_ino = crate::vfs::lookup("/", None).ok();
+
 
 		Self {
 			pid,
@@ -169,9 +121,9 @@ impl Process {
 			priority: Priority::Critial,
 			cr3: process_cr3,
 			rsp: user_rsp as u64,
-			krsp: ksp as u64,
+			krsp,
 			next_pid: None,
-			kstack_top: kernel_stack_top,
+			kstack_top,
 			ctx: CpuContext::new(),
 			fd_table,
 			fork_resume_frame: None,
@@ -257,9 +209,8 @@ pub fn fork_child_from(parent: &Process, frame: &SyscallFrame) -> Result<Process
 	
 	let kernel_stack_nb_pages = KERNEL_STACK_DEFAULT_NB_PAGES;
 	let kernel_stack_buffer_addr = allocate_n_pages(kernel_stack_nb_pages);
-	let kernel_stack_base = kernel_stack_buffer_addr.as_u64() as usize;
 	let kernel_stack_top = kernel_stack_buffer_addr.as_u64() + (PAGE_SIZE * kernel_stack_nb_pages) as u64;
-	let mut ksp = (kernel_stack_base + PAGE_SIZE) as *mut u64;
+	let mut ksp = (kernel_stack_top) as *mut u64;
 
 	unsafe {
 		ksp = ksp.offset(-1);
@@ -311,97 +262,117 @@ pub fn create_process_from_elf(data: &[u8], ppid: ProcessId) -> Result<(ProcessI
 	let current_pml4 = PhysFrame::containing_address(PhysAddr::new(current_cr3()));
 
 	unsafe { switch_pml4(cr3) };
-	if let Ok(entry_point) = load_elf(data) {
-		let pid = NEXT_PID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-
-		let process = Process::new(pid, ppid, entry_point as usize, cr3.start_address().as_u64());
-		unsafe {switch_pml4(current_pml4);}
-		return Ok((pid, process));
-	} else {
-		return Err("Failed loading the process");
-	}
+	let res = match load_elf(data) {
+		Ok(entry_point) => {
+			let pid = NEXT_PID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+			let process = Process::new(pid, ppid, entry_point as usize, cr3.start_address().as_u64());
+			Ok((pid, process))
+		},
+		Err(e) => Err(e),
+	};
+	unsafe {switch_pml4(current_pml4);}
+	res
 }
 
 pub fn get_next_pid() -> ProcessId {
 	NEXT_PID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
 }
 
-pub fn exec_replace_image(process: &mut Process, elf_bytes: &[u8]) -> Result<u64, KernelErrors> {
+pub fn exec_replace_image(process: &mut Process, elf_bytes: &[u8], argv: &[Vec<u8>]) -> Result<(u64, u64), KernelErrors> {
+	let old_cr3 = process.cr3;
+	let old_kstack_top = process.kstack_top;
+
 	let (_, new_cr3_frame) = new_page_table(&mut PhysAllocator);
 	let kernel_cr3 = PhysFrame::containing_address(PhysAddr::new(current_cr3()));
+
 	unsafe { switch_pml4(new_cr3_frame) };
-	let entry = load_elf(elf_bytes).map_err(|_| KernelErrors::EINVAL)?;
-	let user_rsp = map_user_stack_in_current_cr3(PROCESS_BASE_NB_PAGE)?;
+
+	let res = (|| -> Result<(u64,u64), KernelErrors> {
+		let entry = load_elf(elf_bytes).map_err(|_| KernelErrors::EINVAL)?;
+		let stack_top = map_user_stack_in_current_cr3(PROCESS_BASE_NB_PAGE)?;
+		let user_rsp = push_args_to_user_stack(stack_top, argv)?;
+		Ok((entry, user_rsp))
+	})();
 	unsafe { switch_pml4(kernel_cr3) };
+	let (entry, user_rsp) = res?;
 
 	process.cr3 = new_cr3_frame.start_address().as_u64();
 	process.rsp = user_rsp;
 	process.fork_resume_frame = None;
 	process.brk = USER_HEAP_START;
 	process.heap_start = USER_HEAP_START;
-	(process.krsp, process.kstack_top) = kernel_stack_bootstrap(user_rsp, entry, exit_to_user as *const () as u64);
+	(process.krsp, process.kstack_top) =
+		kernel_stack_bootstrap(user_rsp, entry, exit_to_user as *const () as u64);
 	set_tss_rsp0(VirtAddr::new(process.kstack_top));
 	CURRENT_KSTACK_TOP.store(process.kstack_top, core::sync::atomic::Ordering::Release);
-	
-	Ok(entry)
+
+	// Drop the pre-exec address space and kernel stack now that the new image is live.
+	{
+		let mut allocator = KERNEL_FRAME_ALLOCATOR.lock();
+		free_page_table(old_cr3, &mut *allocator);
+	}
+	free_kernel_stack(old_kstack_top);
+
+	Ok((entry, user_rsp))
 }
 
 pub fn map_user_stack_in_current_cr3(nb_pages: usize) -> Result<u64, KernelErrors> {
-	let user_stack_phys  = match PhysAllocator::allocate_n_frame(nb_pages) {
-		Some(p) => p,
-		None => panic!("OOM while creating a new process")
-	};
-
-	let user_stack_page = Page::<Size4KiB>::containing_address(
-		VirtAddr::new(USER_RANGE_END - (nb_pages * PAGE_SIZE) as u64)
-	);
-
-	if nb_pages > 1 {
-		for i in 0..nb_pages {
-
-			let page = Page::<Size4KiB>::containing_address(
-				VirtAddr::new(USER_RANGE_END - (PAGE_SIZE * i) as u64)
-			);
-			let frame = PhysFrame::<Size4KiB>::containing_address(user_stack_phys + (PAGE_SIZE * i) as u64);
-			unsafe { let _ = map_phys_page(
-				page,
-				frame, 
-				PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE, 
-				&mut PhysAllocator,
-			); };
-
-		}
-	} else {
-		let frame = PhysFrame::<Size4KiB>::containing_address(user_stack_phys);
-		unsafe { let _ = map_phys_page(
-			user_stack_page,
-			frame, 
-			PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE, 
-			&mut PhysAllocator,
-		); };
+	if nb_pages == 0 {
+		return Err(KernelErrors::EINVAL);
 	}
-	let user_rsp = user_stack_page.start_address().as_u64() + (PAGE_SIZE * nb_pages) as u64;
-	Ok(user_rsp)
+
+	let phys_start = PhysAllocator::allocate_n_frame(nb_pages)
+		.ok_or(KernelErrors::ENOMEM)?;
+
+	let stack_top = USER_RANGE_END & !(PAGE_SIZE as u64 - 1);
+	let flags = PageTableFlags::PRESENT
+		| PageTableFlags::WRITABLE
+		| PageTableFlags::USER_ACCESSIBLE
+		| PageTableFlags::NO_EXECUTE;
+	
+
+	for i in 0..nb_pages {
+		let offset = (i * PAGE_SIZE) as u64;
+		let virt = VirtAddr::new(stack_top - (nb_pages as u64 * PAGE_SIZE as u64) + offset);
+		let page = Page::<Size4KiB>::containing_address(virt);
+		let frame = PhysFrame::<Size4KiB>::containing_address(phys_start + offset);
+		unsafe {
+			map_phys_page(page, frame, flags, &mut PhysAllocator)
+				.map_err(|_| KernelErrors::EINVAL)?;
+		}
+	}
+	Ok(stack_top)
+
+}
+
+/// `argc = 0`, then a NULL argv terminator. `rsp` stays 16-byte aligned, which
+/// the naked `_start` `call` requires.
+fn write_empty_argv_frame(stack_top: u64) -> u64 {
+	let rsp = stack_top - 16;
+	unsafe {
+		*(rsp as *mut u64) = 0;
+		*((rsp + 8) as *mut u64) = 0;
+	}
+	rsp
 }
 
 fn kernel_stack_bootstrap(user_rsp: u64, entry_point: u64, return_fn: u64) -> (u64, u64) {
 
 	let kernel_stack_nb_pages = KERNEL_STACK_DEFAULT_NB_PAGES;
 	let kernel_stack_buffer_addr = allocate_n_pages(kernel_stack_nb_pages);
-	let kernel_stack_base = kernel_stack_buffer_addr.as_u64() as usize;
-	let kernel_stack_top = kernel_stack_buffer_addr.as_u64() + (PAGE_SIZE * kernel_stack_nb_pages) as u64;
-	let mut ksp = (kernel_stack_base + PAGE_SIZE) as *mut u64;
+	let kernel_stack_top = (kernel_stack_buffer_addr.as_u64() + (PAGE_SIZE * kernel_stack_nb_pages) as u64) & !0xF;
+	let mut ksp = kernel_stack_top as *mut u64;
 
 	unsafe {
-		ksp = ksp.offset(-1);
+		ksp = ksp.sub(1);
 		*ksp = user_rsp;
-		ksp = ksp.offset(-1);
+		ksp = ksp.sub(1);
 		*ksp = entry_point;
-		ksp = ksp.offset(-1);
+		ksp = ksp.sub(1);
 		*ksp = return_fn;
 	
 		for _ in 0..16 {
-			ksp = ksp.offset(-1);
+			ksp = ksp.sub(1);
 			*ksp = 0;
 		}
 	}
@@ -453,10 +424,9 @@ pub fn reap(pid: ProcessId) {
 		if proc.pid == 0 { drop(pt);return; }
 		let mut allocator = KERNEL_FRAME_ALLOCATOR.lock();
 		free_page_table(proc.cr3, &mut *allocator);
+		drop(allocator);
 
-		let proc_kernel_stack_base = proc.kstack_top - (KERNEL_STACK_DEFAULT_NB_PAGES * PAGE_SIZE) as u64;
-		let phys_proc_kernel_stack_base = PhysAddr::new(proc_kernel_stack_base - KERNEL_DYNAMIC_MEM_START);
-		PhysAllocator::free_n_frame(phys_proc_kernel_stack_base, KERNEL_STACK_DEFAULT_NB_PAGES);
+		free_kernel_stack(proc.kstack_top);
 
 		for fd in proc.fd_table.as_mut() {
 			fd.take();
@@ -467,6 +437,26 @@ pub fn reap(pid: ProcessId) {
 	let freed = used_before - used_after;
 	klog!("Reap freed {} frames", freed);
 	drop(pt);
+}
+
+/// Kernel stacks live in `KERNEL_DYNAMIC_MEM` at bump-allocated virtual addresses backed by
+/// arbitrary PMM frames. Always translate VA→PA; never assume `phys == virt - DYNAMIC_START`.
+fn free_kernel_stack(kstack_top: u64) {
+	if kstack_top == 0 {
+		return;
+	}
+	let stack_bytes = (KERNEL_STACK_DEFAULT_NB_PAGES * PAGE_SIZE) as u64;
+	if kstack_top < stack_bytes {
+		return;
+	}
+	let base = kstack_top - stack_bytes;
+	for i in 0..KERNEL_STACK_DEFAULT_NB_PAGES {
+		let virt = VirtAddr::new(base + (i * PAGE_SIZE) as u64);
+		let Some(phys) = virt_to_phys_dyn(virt) else {
+			continue;
+		};
+		PhysAllocator::free_frame(PhysFrame::<Size4KiB>::containing_address(phys).start_address());
+	}
 }
 
 pub fn get_cwd() -> Option<Arc<VfsDentry>>{

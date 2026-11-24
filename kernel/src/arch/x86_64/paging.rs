@@ -79,7 +79,11 @@ fn free_user_subtree(
 ) {
 	for i in 0..512 {
 		let pte = &table[i];
-		if pte.is_unused() || pte.flags().contains(PageTableFlags::HUGE_PAGE) {
+
+		if pte.is_unused() 
+			|| !pte.flags().contains(PageTableFlags::PRESENT)
+			|| pte.flags().contains(PageTableFlags::HUGE_PAGE)
+		{
 			continue;
 		}
 		if level > 1 {
@@ -124,6 +128,49 @@ pub unsafe fn map_phys_page(
 	let mut mapper = unsafe { OffsetPageTable::new(pml4, VirtAddr::new(hhdm_offset)) };
 	let result = unsafe { mapper.map_to(page, frame, flags, frame_allocator) };
 	result?.flush();
+	Ok(())
+}
+
+/// Replace the flags of an already-mapped page.
+pub unsafe fn set_page_flags(page: Page<Size4KiB>, flags: PageTableFlags) -> Result<(), ()> {
+	let pml4 = unsafe { get_active_pml4() };
+	let hhdm_offset = HHDM_OFFSET.lock().expect("HHDM_OFFSET not set\n");
+	let mut mapper = unsafe { OffsetPageTable::new(pml4, VirtAddr::new(hhdm_offset)) };
+	unsafe {
+		mapper
+			.update_flags(page, flags)
+			.map_err(|_| ())?
+			.flush();
+	}
+	Ok(())
+}
+
+/// OR permission bits into an already-mapped user page (ELF segment overlap).
+pub unsafe fn or_page_flags(page: Page<Size4KiB>, add: PageTableFlags) -> Result<(), ()> {
+	use x86_64::structures::paging::{Translate, mapper::TranslateResult};
+
+	let pml4 = unsafe { get_active_pml4() };
+	let hhdm_offset = HHDM_OFFSET.lock().expect("HHDM_OFFSET not set\n");
+	let mut mapper = unsafe { OffsetPageTable::new(pml4, VirtAddr::new(hhdm_offset)) };
+	let TranslateResult::Mapped { flags: old_flags, .. } =
+		mapper.translate(page.start_address())
+	else {
+		return Err(());
+	};
+	// Keep present; allow WRITABLE if either mapping needs it; drop NX if either needs exec.
+	let mut new_flags = old_flags | (add & PageTableFlags::WRITABLE);
+	if !add.contains(PageTableFlags::NO_EXECUTE) {
+		new_flags.remove(PageTableFlags::NO_EXECUTE);
+	}
+	if add.contains(PageTableFlags::USER_ACCESSIBLE) {
+		new_flags.insert(PageTableFlags::USER_ACCESSIBLE);
+	}
+	unsafe {
+		mapper
+			.update_flags(page, new_flags)
+			.map_err(|_| ())?
+			.flush();
+	}
 	Ok(())
 }
 

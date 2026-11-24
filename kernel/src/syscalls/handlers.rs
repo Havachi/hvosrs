@@ -2,11 +2,11 @@ use core::{cmp::Ordering, str};
 
 
 use alloc::slice;
-use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
+use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::{FrameAllocator, FrameDeallocator, Page, PageTableFlags, PhysFrame, Size4KiB}};
 
 use crate::{
 	arch::x86_64::{paging::{map_phys_page, switch_pml4}, syscall::SyscallFrame}, drivers::{console, io::getchar}, errno::KernelErrors::{self, EAGAIN, EINVAL}, kstrace, memory::{PAGE_SIZE, USER_HEAP_RANGE, pmm::PhysAllocator}, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, block_current, process::{self, find_zombie, fork_child_from, get_cwd, has_waitable_child, reap}, schedule, with_current_process}, syscalls::{
-		errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr, write_user},
+		copy_user_args, errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr, write_user},
 	}, time::{BOOT_EPOCH, EPOCH, SysTime}, vfs::{self, SeekOrigin, file::{AT_FDCWD, VfsFileOpenflags}, get_root_dentry, lookup, mkdir, path::{is_absolute, path_basename, path_parent, path_walk}},
 };
 
@@ -360,25 +360,25 @@ pub fn sys_fork(frame: &mut SyscallFrame) -> i64 {
 	}).unwrap_or_else(|e| neg(e))
 }
 
-pub fn sys_execve(path_ptr: u64, _argv: u64, _envp: u64, frame: &mut SyscallFrame) -> i64 {
+pub fn sys_execve(path_ptr: u64, argv_ptr: u64, _envp: u64, frame: &mut SyscallFrame) -> i64 {
 	x86_64::instructions::interrupts::without_interrupts(|| {
 		let path_bytes = copy_user_cstr(path_ptr, MAX_PATH).map_err(|_| KernelErrors::EINVAL)?;
 		let path = str::from_utf8(&path_bytes).map_err(|_| KernelErrors::EINVAL)?;
+		let args = copy_user_args(argv_ptr, &path_bytes)?;
 		//TODO send something else that 777 for the mode
 		let mut file = vfs::open(path, VfsFileOpenflags::O_RDONLY.bits(), 0o777)?;
 		let elf_buf =  vfs::read_file_all(&mut file)?;
 		let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed) as usize;
+		let (entry, user_rsp) = {
+			let mut pt = PROCESS_TABLE.lock();
+			let proc = pt[current_pid].as_mut().ok_or(KernelErrors::EINVAL)?;
+			process::exec_replace_image(proc, &elf_buf, &args)?
+		};
 
-		let mut pt = PROCESS_TABLE.lock();
-		let proc = pt[current_pid].as_mut().ok_or(KernelErrors::EINVAL)?;
-
-		frame.rip_saved = process::exec_replace_image(proc, &elf_buf)?;
-		let proc_rsp = proc.rsp;
-		drop(pt);
-
-		frame.user_rsp = proc_rsp;
+		frame.rip_saved = entry;
+		frame.user_rsp = user_rsp;
 		frame.rax = 0;
-		// Return through syscall_dispatch_rs so CR3 for sysret matches proc.cr3 (see leave_cr3).
+
 		Ok(0)
 	}).unwrap_or_else(|e| neg(e))
 }
@@ -433,57 +433,73 @@ pub fn sys_getpid() -> i64 {
 pub fn sys_brk(addr: u64) -> i64 {
 	if addr == 0 {
 		return with_current_process(|proc| {
-			kstrace!("bkr({:#x}) = {:#x}\n", addr, proc.brk as i64);
+			kstrace!("brk({:#x}) = {:#x}\n", addr, proc.brk as i64);
 			proc.brk
 		}).unwrap() as i64;
 	} else if USER_HEAP_RANGE.contains(addr) {
 		with_current_process(|p| {
 			let current_brk = p.brk;
-			//ignoring negative
-			if addr < current_brk {
-				return 0;
+			if addr <= current_brk {
+				return current_brk as i64;
 			}
-			let diff = addr - p.brk;
+			let diff = addr - current_brk;
 			let nb_pages = (diff + (PAGE_SIZE as u64) - 1) / PAGE_SIZE as u64;
+			let new_brk = current_brk + nb_pages * PAGE_SIZE as u64;
+
+			if !USER_HEAP_RANGE.contains(new_brk - 1) {
+				return neg(KernelErrors::ENOMEM);
+			}
 
 			let frames = match PhysAllocator::allocate_n_frame(nb_pages as usize) {
 				Some(ok) => ok,
 				None => return neg(KernelErrors::ENOMEM),
 			};
-			let (current_cr3, _) = Cr3::read();
-			unsafe { switch_pml4(PhysFrame::containing_address(PhysAddr::new(p.cr3))) };
-			for p in 0..nb_pages {
-				let phys = frames.as_u64() + (p * PAGE_SIZE as u64);
 
-				
+			let (current_cr3, _) = Cr3::read();
+			if current_cr3.start_address().as_u64() != p.cr3 {
+				unsafe { switch_pml4(PhysFrame::containing_address(PhysAddr::new(p.cr3))) };
+			}
+
+			let mut failed = false;
+			for i in 0..nb_pages {
+				let phys = frames.as_u64() + (i * PAGE_SIZE as u64);
 				let page = Page::<Size4KiB>::containing_address(
-					VirtAddr::new(current_brk + (p * PAGE_SIZE as u64))
+					VirtAddr::new(current_brk + (i * PAGE_SIZE as u64))
 				);
 
 				unsafe {
 					match map_phys_page(
 						page,
-						PhysFrame::containing_address(PhysAddr::new(phys)), 
-						PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE,
-						&mut PhysAllocator
+						PhysFrame::containing_address(PhysAddr::new(phys)),
+						PageTableFlags::PRESENT
+							| PageTableFlags::WRITABLE
+							| PageTableFlags::USER_ACCESSIBLE
+							| PageTableFlags::NO_EXECUTE,
+						&mut PhysAllocator,
 					) {
 						Ok(_) => {
 							page.start_address().as_mut_ptr::<u8>().write_bytes(0, PAGE_SIZE);
-						},
+						}
 						Err(_) => {
-							return neg(KernelErrors::ENOMEM);
-						},
+							failed = true;
+							break;
+						}
 					}
-				};
-
+				}
 			}
 			unsafe { switch_pml4(current_cr3) };
-			p.brk = current_brk + nb_pages * PAGE_SIZE as u64;
-			kstrace!("bkr({:#x}) = {:#x}\n", addr, p.brk as i64);
-			return p.brk as i64;
+
+			if failed {
+				PhysAllocator::free_n_frame(frames, nb_pages as usize);
+				return neg(KernelErrors::ENOMEM);
+			}
+
+			p.brk = new_brk;
+			kstrace!("brk({:#x}) = {:#x}\n", addr, p.brk as i64);
+			p.brk as i64
 		}).unwrap_or_else(|| neg(KernelErrors::ENOMEM))
 	} else {
-		return neg(KernelErrors::ENOMEM);
+		neg(KernelErrors::ENOMEM)
 	}
 }
 

@@ -18,7 +18,7 @@ pub struct PhysAllocator;
 
 unsafe impl FrameAllocator<Size4KiB> for PhysAllocator {
 	fn allocate_frame(&mut self) -> Option<frame::PhysFrame<Size4KiB>> {
-		let frame_idx = bitmap_next_free()?;
+		let frame_idx = bitmap_alloc_range(1)?;
 		bitmap_set(frame_idx);
 		let mut ff = FREE_FRAMES.lock();
 		*ff = *ff - 1;
@@ -31,33 +31,40 @@ impl FrameDeallocator<Size4KiB> for PhysAllocator {
 		let frame_idx = frame.start_address().as_u64() / PAGE_SIZE as u64;
 		bitmap_free(frame_idx);
 		let mut ff = FREE_FRAMES.lock();
-		*ff = *ff + 1;
+		*ff += 1;
 	}
 }
 
 impl PhysAllocator {
 	pub fn allocate_n_frame(n: usize) -> Option<PhysAddr> {
-		let frame_idx = bitmap_next_free_range(n)?;
-		bitmap_set_n(frame_idx, n);
+		if n == 0 {
+			return None;
+		}
+		let frame_idx = bitmap_alloc_range(n)?;
+		for i in 0..n as u64 {
+			bitmap_set(frame_idx + i);
+		}
 		let mut ff = FREE_FRAMES.lock();
-		*ff = *ff - 1;
-		return Some(PhysAddr::new_truncate(frame_idx << 12));
+		*ff = ff.saturating_sub(n as u64);
+		Some(PhysAddr::new_truncate(frame_idx << 12))
 	}
 
 	pub fn free_frame(addr: PhysAddr) {
 		let frame_idx = addr.as_u64() / PAGE_SIZE as u64;
 		bitmap_free(frame_idx);
 		let mut ff = FREE_FRAMES.lock();
-		*ff = *ff + 1;
+		*ff += 1;
 	}
 	pub fn free_n_frame(start: PhysAddr, n: usize) {
-		let start_idx = start.as_u64() / PAGE_SIZE as u64;
-		for frame_idx in start_idx..start_idx+n as u64 {
-			bitmap_free(frame_idx);
-			let mut ff = FREE_FRAMES.lock();
-			*ff = *ff + 1;
+		if n == 0 {
+			return;
 		}
-		
+		let start_idx = start.as_u64() / PAGE_SIZE as u64;
+		for frame_idx in start_idx..start_idx + n as u64 {
+			bitmap_free(frame_idx);
+		}
+		let mut ff = FREE_FRAMES.lock();
+		*ff += n as u64;
 	}
 
 	pub fn get_free_frames() -> u64 {
@@ -83,10 +90,10 @@ pub fn init(memory_map: &[&Entry]) {
 fn find_highest_address(memory_map: &[&Entry]) -> u64 {
 	let mut highest_address = 0u64;
 	for e in memory_map {
-		if e.type_ == MEMMAP_USABLE || e.type_ == MEMMAP_BOOTLOADER_RECLAIMABLE {
+		if e.type_ == MEMMAP_USABLE {
 			let top = e.base + e.length;
 			if top > highest_address {
-				highest_address = top
+				highest_address = top;
 			}
 		}
 	}
@@ -103,12 +110,14 @@ fn bitmap_init(memory_map: &[&Entry]) -> (u64, u64) {
 	}
 	for e in memory_map {
 		let nb_page = (e.length as usize + PAGE_SIZE - 1) / PAGE_SIZE;
-  		if e.type_ == MEMMAP_USABLE || e.type_ == MEMMAP_BOOTLOADER_RECLAIMABLE {
+		if e.type_ == MEMMAP_USABLE {
 			for p in 0..nb_page {
 				let frame_idx = (e.base + (p * PAGE_SIZE) as u64) >> 12;
-				if frame_idx == 0{ continue; }
+				if frame_idx == 0 {
+					continue;
+				}
 				bitmap_free(frame_idx);
-				free+=1;
+				free += 1;
 			}
 		}
 	}
@@ -133,9 +142,17 @@ fn bitmap_set_n(start: u64, len: usize) {
 }
 
 fn bitmap_free(frame_idx: u64) {
+	let mut bmap = MEMORY_BITMAP.lock();
 	let map_idx = (frame_idx >> 6) as usize;
 	let bit_idx = frame_idx & 63;
-	MEMORY_BITMAP.lock()[map_idx] &= !(1u64 << bit_idx);
+	assert!(map_idx < bmap.len(), "frame_idx {} out of bitmap bounds", frame_idx);
+	let mask = 1u64 << bit_idx;
+	assert!(
+		(bmap[map_idx] & mask) != 0,
+		"double free detected for frame_idx {}",
+		frame_idx
+	);
+	bmap[map_idx] &= !mask;
 }
 
 //Return true is used, false if free
@@ -263,3 +280,47 @@ pub fn get_used_frames() -> u64 {
 pub fn get_total_frames() -> u64 {
 	return *TOTAL_FRAMES.lock();
 }
+
+fn is_frame_allocated_in_bmap(bmap: &[u64], frame_idx: u64) -> bool {
+	let map_idx = (frame_idx >> 6) as usize;
+	let bit_idx = frame_idx & 63;
+	assert!(map_idx < bmap.len(), "frame_idx {} out of bitmap bounds", frame_idx);
+	(bmap[map_idx] & (1u64 << bit_idx)) != 0
+}
+
+fn bitmap_alloc_range(n: usize) -> Option<u64> {
+	if n == 0 {
+		return None;
+	}
+	let mut bmap = MEMORY_BITMAP.lock();
+	let mut consecutive_free = 0;
+	let mut start_frame = 0;
+
+	for (chunk_idx, chunk) in bmap.iter().enumerate() {
+		if *chunk == USED_CHUNK_MASK {
+			consecutive_free = 0;
+			continue;
+		}
+		for bit_idx in 0..64 {
+			let current_frame = (chunk_idx as u64 * 64) + bit_idx;
+			if (chunk & (1u64 << bit_idx)) == 0 {
+				if consecutive_free == 0 {
+					start_frame = current_frame;
+				}
+				consecutive_free += 1;
+				if consecutive_free == n {
+					for frame_idx in start_frame..start_frame + n as u64 {
+						let m_idx = (frame_idx >> 6) as usize;
+						let b_idx = frame_idx & 63;
+						bmap[m_idx] |= 1u64 << b_idx;
+					}
+					return Some(start_frame);
+				}
+			} else {
+				consecutive_free = 0;
+			}
+		}
+	}
+	None
+}
+

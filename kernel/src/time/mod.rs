@@ -2,7 +2,7 @@ pub mod rtc;
 
 use core::{ fmt::Display, ops::{Add, Sub}, sync::atomic::AtomicU64};
 
-use crate::{cmos::CmosRtc, kprint, time::rtc::init_epoch_from_rtc};
+use crate::{cmos::CmosRtc, time::rtc::init_epoch_from_rtc};
 
 
 pub const MILLI_PER_SEC: u64 = 1000;

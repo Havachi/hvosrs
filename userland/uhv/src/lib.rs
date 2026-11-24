@@ -1,16 +1,19 @@
 #![no_std]
 #![no_main]
 
+use core::arch::naked_asm;
+
 pub mod heap;
 mod syscalls;
 mod files;
+pub mod args;
 use core::time::Duration;
 
 use alloc::boxed::Box;
 pub use files::*;
 pub use syscalls::*;
 
-use crate::time::{DateTime, UnixTime};
+use crate::{args::init_args, time::{DateTime, UnixTime}};
 
 extern crate alloc;
 pub const O_CREAT: u64 = 0o100;
@@ -120,12 +123,13 @@ pub struct SysTime {
 	pub millis: u64
 }
 
-pub fn now() {
+pub fn now() -> Result<(), i64> {
 	let mut time = SysTime { ..Default::default() }; 
 	sys_clock_gettime(0, &mut time);
 	let unix = UnixTime::from(time) + Duration::from_secs_f32(2.0);
 	let dt = DateTime::from_unixtime(unix);
-	println!("{}",dt)
+	println!("{}",dt);
+	return Ok(());
 }
 
 impl From<SysTime> for UnixTime {
@@ -303,4 +307,31 @@ mod time {
 	pub const SEC_PER_DAY: u64 = SEC_PER_HOURS * 24;
 	pub const SEC_PER_WEEK: u64 = SEC_PER_DAY * 7;
 	pub const MILLI_PER_DAY: u64 = 24 * 60 * 60 * 1000;
+}
+
+
+unsafe extern "Rust" {
+	fn main(argc: isize, argv: *const *const u8) -> i32;
+}
+
+/// Process entry. Must be naked: a Rust prologue would push a register and
+/// make `[rsp]` the pushed value instead of the `argc` the kernel wrote.
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _start() -> ! {
+	naked_asm!(
+		"mov rdi, [rsp]",
+		"lea rsi, [rsp + 8]",
+		"call {rust_start}",
+		"ud2",
+		rust_start = sym rust_start,
+	);
+}
+
+unsafe extern "C" fn rust_start(argc: isize, argv: *const *const u8) -> ! {
+	unsafe {
+		init_args(argc, argv);
+		let code = main(argc, argv);
+		exit(code as u32);
+	}
 }

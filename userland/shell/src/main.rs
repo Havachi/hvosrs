@@ -6,7 +6,7 @@ use core::ptr::null;
 
 use builtins::*;
 
-use alloc::{collections::BTreeMap, format, string::{String, ToString}, vec::Vec};
+use alloc::{collections::BTreeMap, format, string::{String, ToString}, vec::{self, Vec}};
 use uhv::*;
 extern crate alloc;
 
@@ -16,10 +16,11 @@ pub fn init(env: &mut Env) {
 	env.prompt = String::from(format!("\x1b[92m-> \x1b[0m\x1b[94m{}\x1b[0m > ", env.pwd));
 	env.vars = BTreeMap::new();
 	env.vars.insert(String::from("?"), ShellVar::Int(0));
+	env.vars.insert(String::from("PATH"), ShellVar::Str(String::from("/bin")));
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+extern "Rust" fn main(_: isize, _: *const *const u8) -> i32 {
 	let mut env = Env::default();
 	init(&mut env);
 	let mut line_buffer = Vec::with_capacity(1024);
@@ -95,50 +96,121 @@ fn repl(env: &mut Env, buf: &Vec<u8>) -> Result<(), i64> {
 	let parsed = replace_vars(env, &args);
 	let cmd = parsed[0].clone();
 
-	match cmd.as_str() {
-		"cd" => cd(env, &parsed)?,
-		"clear" => clear()?,
-		"echo" => echo(env, &parsed)?,
-		"exec" => exec(env, &parsed)?,
-		"exit" => exit(0),
-		"help" => if parsed.len() == 1 { help(&String::new());} else { help(&parsed[1]);},
-		"history" => history(env),
-		"ls" => ls(env, &parsed)?,
-		"mkdir" => mkdir_wrapper(&parsed)?,
-		"mkfs" => mkfs(&parsed)?,
-		"mount" => builtins::mount(&parsed)?,
-		"now" => now(),
-		"pwd" => pwd(env)?,
-		_ => {
-			if parsed[0].contains('=') {
-				return set_var(env, &parsed[0]);
-			}
+	match run_builtin(env, &parsed) {
+		Some(res) => return res,
+		None => {}
+	}
 
-			if parsed[0].starts_with("./") {
+	if parsed[0].contains('=') {
+		return set_var(env, &parsed[0]);
+	}
 
-				let p = fork();
-				if p == 0 {
-					let ret = execve(parsed[0].as_bytes(), null(), null());
-					if ret < 0 {
-						eprintln!("shell: {}: {}", errno_to_str(ret), parsed[0]);
-						exit(ret as u32);
-					}
-				} else if p > 0 {
-					let _ = waitid(0, 0, 0, 0);
-					return Ok(());
-				} else {
-					eprintln!("shell: failed to fork");
-					exit(p as u32);
-				}
 
-			}
+	let path = match  resolve_prog_path(env, &args) {
+		Ok(p) => p,
+		Err(_) => {
 			eprintln!("shell: command not found: {}", cmd);
-			return Err(127)
+			return Err(127);
 		}
+	};
+	spawn(&path, &parsed)
+}
+
+fn resolve_prog_path(env: &Env, args: &Vec<String>) -> Result<String, i64> {
+	if args[0].contains("/") {
+		let res = open(args[0].as_bytes(), 0);
+		if res > 0 {
+			close(res);
+			return Ok(String::from(args[0].clone()));
+		} else {
+			return Err(127);
+		}
+	} else {
+		if let ShellVar::Str(shellpath) = env.get_var(&"PATH".to_string()).ok_or(-1)? {
+			for dirs_path in shellpath.split_terminator(':') {
+				if dirs_path.is_empty() {
+					continue;
+				}
+				let mut try_resolve_path = String::from(dirs_path);
+				try_resolve_path.push('/');
+				try_resolve_path.push_str(&args[0]);
+				let res = open(try_resolve_path.as_bytes(), 0);
+				if res > 0 {
+					close(res);
+					return Ok(String::from(try_resolve_path));
+				}
+			}
+			return Err(127);
+		}
+	}
+	return Err(127);
+}
+
+fn spawn(path: &str, args: &Vec<String>) -> Result<(), i64> {
+	let p = fork();
+	if p == 0 {
+		let mut path_cstr = Vec::with_capacity(path.len() + 1);
+		path_cstr.extend_from_slice(path.as_bytes());
+		path_cstr.push(0);
+		let argc = args.len();
+		let prog_name =  &path.clone();
+		let mut bufs: Vec<Vec<u8>> = Vec::new();
+		for p in args {
+			let mut buf = Vec::with_capacity(p.len() + 1);
+			buf.extend_from_slice(p.as_bytes());
+			buf.push(0);
+			bufs.push(buf);
+		}
+		let mut ptrs = Vec::with_capacity(argc);
+		for buf in &bufs {
+			ptrs.push(buf.as_ptr());
+		}
+		ptrs.push(null());
+		let ret = execve(path_cstr.as_slice(), ptrs.as_ptr(), null());
+		if ret < 0 {
+			eprintln!("shell: {}: {}", errno_to_str(ret),prog_name);
+			exit(ret as u32);
+		} 
+	} else if p > 0 {
+		let _ = waitid(0, 0, 0, 0);
+		return Ok(());
+	} else {
+		eprintln!("shell: failed to fork");
+		exit(p as u32);
 	}
 	Ok(())
 }
 
+fn run_builtin(env: &mut Env, args: &Vec<String>) -> Option<Result<(), i64>> {
+	let cmd = args[0].clone();
+
+	let res = match cmd.as_str() {
+		"cd" => cd(env, &args),
+		"clear" => clear(),
+		"echo" => echo(env, &args),
+		"exec" => exec(env, &args),
+		"exit" => exit(0),
+		"help" => {
+			if args.len() == 1 {
+				help(&String::new())
+			} else {
+				help(&args[1])
+			}
+		},
+		"history" => history(env),
+		//"ls" => ls(env, &parsed)?,
+		"mkdir" => mkdir_wrapper(&args),
+		"mkfs" => mkfs(&args),
+		"mount" => builtins::mount(&args),
+		"now" => now(),
+		"pwd" => pwd(env),
+		_ => {
+			return None;
+		}
+	};
+	Some(res)
+
+}
 
 fn split_cmd(buf: &Vec<u8>) -> Result<(String, Vec<String>), i64>{
 

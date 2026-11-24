@@ -53,13 +53,14 @@ pub fn fork() -> i64 {
 	unsafe { syscall0(SYS_FORK )}
 }
 
-pub fn execve(path: &[u8], argv: *const u8, envp: *const u8) -> i64 {
+pub fn execve(path: &[u8], argv: *const *const u8, envp: *const *const u8) -> i64 {
 	let buf = path_bytes_cstr(path);
 	unsafe { syscall3(SYS_EXECVE, buf.as_ptr() as u64, argv as u64, envp as u64) }
 }
 
-pub fn exit(code:u32) {
+pub fn exit(code:u32) -> ! {
 	unsafe { syscall1(SYS_EXIT, code as u64) };
+	loop {}
 }
 
 pub fn getdents(fd: i64, buf: &mut [u8]) -> i64 {

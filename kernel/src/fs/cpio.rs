@@ -159,7 +159,7 @@ pub fn load_initrd(initrd_slice: &[u8]) -> Result<(), KernelErrors> {
 				vfs::write(&mut file, entry.data)?;
 			}
 			_ => {
-
+                ksprint!("[INITRD] unknown file type: {}", file_type)
 			}
 		}
     }

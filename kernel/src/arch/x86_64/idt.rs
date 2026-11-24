@@ -1,7 +1,7 @@
-use core::arch::asm;
+use core::{arch::asm, sync::atomic::Ordering};
 
 use lazy_static::lazy_static;
-use x86_64::{PhysAddr, VirtAddr, structures::{idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode}, paging::Translate}};
+use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::{idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode}, paging::Translate}};
 
 use crate::{arch::x86_64::paging::KERNEL_MAPPER, drivers::acpi::LAPIC, interrupts::PIT_HZ, klog, kpanic, ksprint, memory::{HHDM_OFFSET, KERNEL_DYNAMIC_MEM_RANGE, vmm::phys_to_virt}, scheduler::reschedule, time::tick_from_pit_hz};
 
@@ -42,7 +42,6 @@ extern "x86-interrupt" fn segment_not_present_handler(_sf: InterruptStackFrame, 
 extern "x86-interrupt" fn page_fault_handler(sf:InterruptStackFrame, error_code: PageFaultErrorCode) {
 	use x86_64::registers::control::Cr2;
 	let cr2 = Cr2::read_raw();
-
 	match try_handle_page_fault(cr2, error_code) {
 		Ok(_) => {
 			ksprint!("Page fault is maybe fixed\n");
@@ -80,7 +79,6 @@ fn try_handle_page_fault(cr2: u64, error_code: PageFaultErrorCode) -> Result<(),
 	};
 
 	let mapper = KERNEL_MAPPER.lock();
-
 	match mapper.translate(virt) {
 		TranslateResult::Mapped { frame:_, offset:_, flags } => {
 			if !flags.contains(PageTableFlags::PRESENT) {
@@ -233,4 +231,76 @@ extern "x86-interrupt" fn idt_nvme_interrupt_handler (_stack_frame: InterruptSta
 pub fn init() {
 	IDT.load();
 	klog!("IDT init done")
+}
+
+
+fn dump_ring3_fault(kind: &str, stack_frame: &InterruptStackFrame, cr2: Option<u64>, err_code: Option<u64>) {
+	let pid = crate::scheduler::CURRENT_PID.load(Ordering::Relaxed);
+	let (pml4_frame, _) = Cr3::read();
+	let cr3 = pml4_frame.start_address().as_u64();
+
+	let rsp = stack_frame.stack_pointer.as_u64();
+	let rip = stack_frame.instruction_pointer.as_u64();
+
+	crate::klog!(
+		"[R3 {}] pid={} cr3={:#x} rip={:#x} rsp={:#x} cr2={:?} err={:?}",
+		kind,
+		pid,
+		cr3,
+		rip,
+		rsp,
+		cr2,
+		err_code,
+	);
+}
+
+#[repr(C)]
+pub struct SavedGprs {
+	pub r15: u64,
+	pub r14: u64,
+	pub r13: u64,
+	pub r12: u64,
+	pub r11: u64,
+	pub r10: u64,
+	pub r9: u64,
+	pub r8: u64,
+	pub rbp: u64,
+	pub rdi: u64,
+	pub rsi: u64,
+	pub rdx: u64,
+	pub rcx: u64,
+	pub rbx: u64,
+	pub rax: u64,
+}
+
+pub fn log_fault_regs(
+	kind: &str,
+	stack_frame: &InterruptStackFrame,
+	gprs: Option<&SavedGprs>,
+	cr2: Option<u64>,
+	err_code: Option<u64>,
+) {
+	let pid = crate::scheduler::CURRENT_PID.load(Ordering::Relaxed);
+	let (pml4_frame, _) = Cr3::read();
+	let cr3 = pml4_frame.start_address().as_u64();
+	let rip = stack_frame.instruction_pointer.as_u64();
+	let rsp = stack_frame.stack_pointer.as_u64();
+
+	if let Some(g) = gprs {
+		crate::klog!(
+			"[R3 {}] pid={} cr3={:#x} rip={:#x} rsp={:#x} cr2={:?} err={:?} rdi={:#x} rsi={:#x} rdx={:#x}",
+			kind,
+			pid,
+			cr3,
+			rip,
+			rsp,
+			cr2,
+			err_code,
+			g.rdi,
+			g.rsi,
+			g.rdx,
+		);
+	} else {
+		dump_ring3_fault(kind, stack_frame, cr2, err_code);
+	}
 }

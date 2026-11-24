@@ -4,17 +4,18 @@ mod user_access;
 
 use core::sync::atomic::Ordering;
 
+use alloc::vec::{Vec};
 use x86_64::registers::rflags::RFlags;
 
 use crate::{
-	arch::x86_64::{asm::current_cr3, syscall::SyscallFrame}, klog, memory::USER_RANGE, scheduler::{CURRENT_PID, with_current_process}, syscalls::{
-		handlers::*,
-		user_access::{clear_user_cr3, enter_kernel_page_table, leave_kernel_page_table, set_user_cr3},
+	arch::x86_64::{asm::current_cr3, syscall::SyscallFrame}, errno::KernelErrors, klog, kstrace, memory::USER_RANGE, scheduler::{CURRENT_PID, with_current_process}, syscalls::{
+		handlers::*, user_access::{clear_user_cr3, copy_from_user_into, copy_user_cstr, enter_kernel_page_table, leave_kernel_page_table, set_user_cr3},
 	},
 };
 
 const NR_SYSCALLS: usize = 512;
-
+const MAX_ARGS: usize = 64;
+const MAX_ARG_LEN: usize = 256;
 type SyscallFn = fn(u64,u64,u64,u64,u64,u64, &mut SyscallFrame) -> i64;
 
 fn sys_nosys(_:u64,_:u64,_:u64,_:u64,_:u64,_:u64, _: &mut SyscallFrame) -> i64 { -38 }
@@ -117,4 +118,70 @@ pub fn syscall_dispatcher(nr: u64, frame: &mut SyscallFrame) -> i64 {
 	}
 
 	retval
+}
+
+pub fn copy_user_args(argv_ptr: u64, fallback_arg0: &[u8]) -> Result<Vec<Vec<u8>>, KernelErrors> {
+	if argv_ptr == 0 {
+		return Ok(alloc::vec![fallback_arg0.to_vec()]);
+	}
+
+	let mut args: Vec<_> = Vec::new();
+	for i in 0..MAX_ARGS {
+		let slot_addr = argv_ptr
+			.checked_add((i * core::mem::size_of::<u64>()) as u64)
+			.ok_or(KernelErrors::EFAULT)?;
+		if !USER_RANGE.contains(slot_addr) {
+			return Err(KernelErrors::EFAULT);
+		}
+
+		let mut ptr_buf = [0u8; 8];
+		copy_from_user_into(&mut ptr_buf, slot_addr).map_err(|_| KernelErrors::EBADF)?;
+		let str_ptr = u64::from_le_bytes(ptr_buf);
+		if str_ptr == 0 {
+			break;
+		}
+		if !USER_RANGE.contains(str_ptr) {
+			
+			return Err(KernelErrors::EFAULT);
+		}
+		let mut arg_bytes = copy_user_cstr(str_ptr, MAX_ARG_LEN).map_err(|_| KernelErrors::EFAULT)?;
+		arg_bytes.push(0);
+		args.push(arg_bytes);
+	}
+	if args.is_empty() {
+		args.push(fallback_arg0.to_vec());
+	}
+	Ok(args)
+}
+
+pub fn push_args_to_user_stack(mut rsp: u64, argv: &[Vec<u8>]) -> Result<u64, KernelErrors> {
+	let mut arg_ptrs: Vec<u64> = Vec::with_capacity(argv.len());
+	for arg in argv {
+		let len = arg.len();
+		let total_bytes = len.checked_add(1).ok_or(KernelErrors::EINVAL)? as u64;
+		rsp = rsp.checked_sub(total_bytes).ok_or(KernelErrors::EINVAL)?;
+
+		unsafe {
+			core::ptr::copy_nonoverlapping(arg.as_ptr(), rsp as *mut u8, len);
+			*((rsp + len as u64) as *mut u8) = 0;
+		}		
+		arg_ptrs.push(rsp);
+	}
+	let total_words = arg_ptrs.len() + 2;
+	rsp &= !0xF;
+	if total_words % 2 == 1 {
+		rsp = rsp.checked_sub(8).ok_or(KernelErrors::EINVAL)?;
+	}
+
+	rsp = rsp.checked_sub(8).ok_or(KernelErrors::EINVAL)?;
+	unsafe { *(rsp as *mut u64) = 0; }
+	for &ptr in arg_ptrs.iter().rev() {
+		rsp = rsp.checked_sub(8).ok_or(KernelErrors::EINVAL)?;
+		unsafe { *(rsp as *mut u64) = ptr; }
+	}
+
+	rsp = rsp.checked_sub(8).ok_or(KernelErrors::EINVAL)?;
+	unsafe { *(rsp as *mut u64) = arg_ptrs.len() as u64; }
+
+	Ok(rsp)
 }

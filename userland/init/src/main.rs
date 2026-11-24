@@ -5,7 +5,7 @@ use uhv::*;
 static PATH: &[u8] = b"/tmp/hello\0";
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+extern "Rust" fn main(_: isize, _: *const *const u8) -> i32 {
 	let f = fork();
 	if f == 0 {
 		let path = b"/bin/shell\0";

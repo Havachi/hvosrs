@@ -49,6 +49,7 @@ pub extern "C" fn _start() {
     let mut init_file = vfs::open("/bin/init", VfsFileOpenflags::O_RDONLY.bits(), 0o777).unwrap();
     
     let data = vfs::read_file_all(&mut init_file).unwrap();
+    
     if let Ok((pid, proc)) = process::create_process_from_elf(&data, 0)
         .map_err(|e| kerror!("Failed loading module: {e}")) 
     {
