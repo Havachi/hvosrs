@@ -1,13 +1,10 @@
-use core::{cmp::Ordering, str};
-
-
+use core::str;
 use alloc::slice;
-use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::{FrameAllocator, FrameDeallocator, Page, PageTableFlags, PhysFrame, Size4KiB}};
-
+use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
 use crate::{
-	arch::x86_64::{paging::{map_phys_page, switch_pml4}, syscall::SyscallFrame}, drivers::{console, io::getchar}, errno::KernelErrors::{self, EAGAIN, EINVAL}, kstrace, memory::{PAGE_SIZE, USER_HEAP_RANGE, pmm::PhysAllocator}, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, block_current, process::{self, find_zombie, fork_child_from, get_cwd, has_waitable_child, reap}, schedule, with_current_process}, syscalls::{
-		copy_user_args, errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr, write_user},
-	}, time::{BOOT_EPOCH, EPOCH, SysTime}, vfs::{self, SeekOrigin, file::{AT_FDCWD, VfsFileOpenflags}, get_root_dentry, lookup, mkdir, path::{is_absolute, path_basename, path_parent, path_walk}},
+	arch::x86_64::{paging::{map_phys_page, switch_pml4}, syscall::SyscallFrame}, errno::KernelErrors::{self, EAGAIN}, kstrace, memory::{PAGE_SIZE, USER_HEAP_RANGE, pmm::PhysAllocator}, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, block_current, process::{self, find_zombie, fork_child_from, get_cwd, has_waitable_child, reap}, schedule, wake_by_blockedby, with_current_process}, syscalls::{
+		copy_user_args, copy_user_env, errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr},
+	}, time::{BOOT_EPOCH, EPOCH, SysTime}, vfs::{self, SeekOrigin, file::{AT_FDCWD, VfsFileOpenflags}, get_root_dentry, inode::VfsInodeType, lookup, mkdir, path::{is_absolute, path_basename, path_parent, path_walk}},
 };
 
 pub const SYS_READ: usize = 0;
@@ -20,6 +17,9 @@ pub const SYS_LSTAT: usize = 6;
 pub const SYS_LSEEK: usize = 8;
 pub const SYS_BRK: usize = 12;
 pub const SYS_PWRITE64: usize = 18;
+pub const SYS_PIPE: usize = 22;
+pub const SYS_DUP: usize = 32;
+pub const SYS_DUP2: usize = 33;
 pub const SYS_GETPID: usize = 39;
 pub const SYS_FORK: usize = 57;
 pub const SYS_EXECVE: usize = 59;
@@ -47,63 +47,47 @@ pub fn sys_read(fd: i32, user_buf: u64, count: usize) -> i64 {
 		return neg(KernelErrors::EINVAL);
 	}
 	let mut kbuf = alloc::vec![0u8; count];
+	let fd_idx = fd as usize;
 
-	let mut pt = PROCESS_TABLE.lock();
-	let pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed);
+	loop {
+		let mut pt = PROCESS_TABLE.lock();
+		let pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed);
 
-	if let Some(proc) = pt[pid as usize].as_mut() {
-		let fd = fd as usize;
-		if fd >= proc.fd_table.len() {
-			drop(pt);
+		let Some(proc) = pt[pid as usize].as_mut() else {
+			return neg(KernelErrors::EINVAL);
+		};
+		if fd_idx >= proc.fd_table.len() {
 			return neg(KernelErrors::EBADF);
 		}
-
-		let n = match fd {
-			0 => {
-				//dont need fd_table for stdin
-				drop(pt);
-				let mut i = 0;
-				while i < count {
-					match getchar() {
-						Ok(c) => {
-							kbuf[i] = c;
-							i+=1;
-						}
-						Err(k) => {
-							if k == KernelErrors::EAGAIN {
-								block_current(process::BlockedBy::Stdin);
-							} else {
-								return neg(k);
-							}
-						}
-					}
-				}
-				i
-			},
-			_ => {
-				let file = match proc.fd_table[fd].as_mut().ok_or(KernelErrors::EBADF) {
-					Ok(f) => f,
-					Err(er) => {
-						drop(pt);
-						return neg(er);
-					},
-				};
-				match vfs::read(file, &mut kbuf) {
-					Ok(n) => n,
-					Err(er) => {
-						drop(pt);
-						return neg(er);
-					},
-				}
-			}
+		let Some(file) = proc.fd_table[fd_idx].as_mut() else {
+			return neg(KernelErrors::EBADF);
 		};
 
-		if n > 0 && copy_to_user(user_buf, &kbuf[..n]).is_err() {
-			return neg(KernelErrors::EFAULT);
+		match vfs::read(file, &mut kbuf) {
+			Ok(n) => {
+				let itype = file.inode.itype();
+				drop(pt);
+				if n > 0 {
+					if itype == VfsInodeType::FIFO {
+						wake_by_blockedby(process::BlockedBy::Pipe);
+					}
+					if copy_to_user(user_buf, &kbuf[..n]).is_err() {
+						return neg(KernelErrors::EFAULT);
+					}
+				}
+			
+				return n as i64;
+			}
+			Err(EAGAIN) => {
+				let reason = match file.inode.itype() {
+					VfsInodeType::FIFO => process::BlockedBy::Pipe,
+					_ => process::BlockedBy::Stdin
+				};
+				drop(pt);
+				block_current(reason);
+			}
+			Err(er) => return neg(er),
 		}
-		return n as i64
-	} else {
-		return neg(KernelErrors::EINVAL);
 	}
 }
 
@@ -115,32 +99,59 @@ pub fn sys_write(fd: i32, user_buf: u64, count: usize) -> i64 {
 		return neg(KernelErrors::EINVAL);
 	}
 
-	let mut buf = alloc::vec![0u8; count];
-	if copy_from_user_into(&mut buf, user_buf).is_err() {
+	let mut kbuf = alloc::vec![0u8; count];
+	if copy_from_user_into(&mut kbuf, user_buf).is_err() {
 		return EFAULT;
 	}
+	let kbuf2 = kbuf;
+	let fd_idx = fd as usize;
+	let mut written = 0;
+	loop {
+		let mut pt = PROCESS_TABLE.lock();
+		let pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed);
+		let Some(proc) = pt[pid as usize].as_mut() else {
+			return neg(KernelErrors::EINVAL);
+		};
+		if fd_idx >= proc.fd_table.len() {
+			return neg(KernelErrors::EBADF);
+		}
+		let Some(file) = proc.fd_table[fd_idx].as_mut() else {
+			return neg(KernelErrors::EBADF);
+		};
 
-	match fd {
-		1 => {
-			console::write_bytes(&buf);
-			count as i64
+		let itype = file.inode.itype();
+		match vfs::write(file, &kbuf2[written..]) {
+			Ok(n) => {
+				drop(pt);
+				if n == 0 {
+					return written as i64;
+				}
+				written += n;
+				if itype == VfsInodeType::FIFO {
+					wake_by_blockedby(process::BlockedBy::Pipe);
+				}
+				if written < count {
+					continue;
+				}
+				return written as i64;
+			},
+			Err(KernelErrors::EPIPE) => {
+				if written > 0 {
+					return written as i64;
+				} else {
+					return neg(KernelErrors::EPIPE);
+				}
+			},
+			Err(KernelErrors::EAGAIN) => {
+				if itype == VfsInodeType::FIFO {
+					drop(pt);
+					block_current(process::BlockedBy::Pipe);
+				} else {
+					return neg(KernelErrors::EAGAIN);
+				}
+			},
+			Err(err) => return neg(err),
 		}
-		2 => {
-			console::_console_eprint(format_args!("{}", str::from_utf8(&buf).unwrap_or("<invalid utf8>")));
-			count as i64
-		}
-		_ => match with_current_process(|proc| {
-			let fd = fd as usize;
-			if fd >= proc.fd_table.len() {
-				return Err(KernelErrors::EBADF);
-			}
-			let file = proc.fd_table[fd].as_mut().ok_or(KernelErrors::EBADF)?;
-			vfs::write(file, &buf)
-		}) {
-			Some(Ok(n)) => n as i64,
-			Some(Err(e)) => neg(e),
-			None => neg(KernelErrors::EBADF),
-		},
 	}
 }
 
@@ -183,9 +194,6 @@ pub fn sys_open(path_ptr: u64, flags: u64, mode: u64) -> i64 {
 }
 
 pub fn sys_close(fd: i32) -> i64 {
-	if fd < 3 {
-		return neg(KernelErrors::EBADF);
-	}
 	match with_current_process(|proc| {
 		let fd = fd as usize;
 		if fd >= proc.fd_table.len() {
@@ -194,10 +202,17 @@ pub fn sys_close(fd: i32) -> i64 {
 		if proc.fd_table[fd].is_none() {
 			return Err(KernelErrors::EBADF);
 		}
-		proc.fd_table[fd] = None;
-		Ok(())
+		let f = proc.fd_table[fd].take().ok_or(KernelErrors::EBADF)?;
+		Ok(f)
 	}) {
-		Some(Ok(())) => 0,
+		Some(Ok(f)) =>  {
+			let is_fifo = f.inode.itype() == VfsInodeType::FIFO;
+			drop(f);
+			if is_fifo {
+				wake_by_blockedby(process::BlockedBy::Pipe);
+			}
+			0
+		},
 		Some(Err(e)) => neg(e),
 		None => neg(KernelErrors::EBADF),
 	}
@@ -214,7 +229,7 @@ pub fn sys_stat(path_ptr: u64, stat_buf: u64) -> i64 {
 			return neg(KernelErrors::EINVAL)
 		},
 	};
-
+	//kstrace!("stat: {}\n", path);
 	let root = match get_root_dentry() {
 		Ok(d) => d,
 		Err(e) => return neg(e),
@@ -273,7 +288,7 @@ pub fn sys_fstat(fd: u64, stat_buf: u64) -> i64 {
 
 }
 
-pub fn sys_lstat(path_ptr: u64, stat_buf: u64) -> i64 {
+pub fn sys_lstat(_path_ptr: u64, _stat_buf: u64) -> i64 {
 	-127
 }
 
@@ -360,11 +375,12 @@ pub fn sys_fork(frame: &mut SyscallFrame) -> i64 {
 	}).unwrap_or_else(|e| neg(e))
 }
 
-pub fn sys_execve(path_ptr: u64, argv_ptr: u64, _envp: u64, frame: &mut SyscallFrame) -> i64 {
+pub fn sys_execve(path_ptr: u64, argv_ptr: u64, envp_ptr: u64, frame: &mut SyscallFrame) -> i64 {
 	x86_64::instructions::interrupts::without_interrupts(|| {
 		let path_bytes = copy_user_cstr(path_ptr, MAX_PATH).map_err(|_| KernelErrors::EINVAL)?;
 		let path = str::from_utf8(&path_bytes).map_err(|_| KernelErrors::EINVAL)?;
 		let args = copy_user_args(argv_ptr, &path_bytes)?;
+		let env = copy_user_env(envp_ptr)?;
 		//TODO send something else that 777 for the mode
 		let mut file = vfs::open(path, VfsFileOpenflags::O_RDONLY.bits(), 0o777)?;
 		let elf_buf =  vfs::read_file_all(&mut file)?;
@@ -372,7 +388,7 @@ pub fn sys_execve(path_ptr: u64, argv_ptr: u64, _envp: u64, frame: &mut SyscallF
 		let (entry, user_rsp) = {
 			let mut pt = PROCESS_TABLE.lock();
 			let proc = pt[current_pid].as_mut().ok_or(KernelErrors::EINVAL)?;
-			process::exec_replace_image(proc, &elf_buf, &args)?
+			process::exec_replace_image(proc, &elf_buf, &args, &env)?
 		};
 
 		frame.rip_saved = entry;
@@ -517,14 +533,6 @@ pub fn sys_pwrite64(fd: i32, user_buf: u64, count: usize, pos: u64) -> i64 {
 	}
 	sys_lseek(fd, pos as i64, 0);
 	match fd {
-		1 => {
-			console::write_bytes(&buf);
-			count as i64
-		}
-		2 => {
-			console::_console_eprint(format_args!("{}", str::from_utf8(&buf).unwrap_or("<invalid utf8>")));
-			count as i64
-		}
 		_ => match with_current_process(|proc| {
 			let fd = fd as usize;
 			if fd >= proc.fd_table.len() {
@@ -538,6 +546,98 @@ pub fn sys_pwrite64(fd: i32, user_buf: u64, count: usize, pos: u64) -> i64 {
 			None => neg(KernelErrors::EBADF),
 		},
 	}
+}
+
+pub fn sys_pipe(fildes_ptr: u64) -> i64 {
+	let (r, w) = crate::fs::pipe::pair() ;
+	
+	let res = match with_current_process(|proc| {
+
+		let rfd = alloc_fd(proc).ok_or(KernelErrors::EMFILE)?;
+		proc.fd_table[rfd as usize] = Some(
+			vfs::file::VfsFile::new(r, 0, VfsFileOpenflags::O_RDONLY)
+		);
+
+		let wfd = match alloc_fd(proc) {
+			Some(fd) => fd,
+			None => {
+				proc.fd_table[rfd as usize] = None;
+				return Err(KernelErrors::EMFILE);
+			}
+		};
+		proc.fd_table[wfd as usize] = Some(
+			vfs::file::VfsFile::new(w, 0, VfsFileOpenflags::O_WRONLY)
+		);
+		
+		Ok([rfd, wfd])
+	})
+	.unwrap_or(Err(KernelErrors::EBADF)) {
+		Ok(fds) => fds,
+		Err(er) => return neg(er),
+	};
+
+	let mut buf = [0u8;8];
+	buf[0..4].copy_from_slice(&res[0].to_le_bytes());
+	buf[4..8].copy_from_slice(&res[1].to_le_bytes());
+
+	match copy_to_user(fildes_ptr, &buf) {
+		Ok(()) => {},
+		Err(er) => {
+
+			with_current_process(|proc| {
+				proc.fd_table[res[0] as usize] = None;
+				proc.fd_table[res[1] as usize] = None;
+			});
+			return er;
+		}
+	};
+
+	0
+}	
+
+pub fn sys_dup(old_fd: u64) -> i64 {
+	with_current_process(|proc| {
+		let idx = usize::try_from(old_fd).map_err(|_| KernelErrors::EBADF)?;
+		if proc.fd_table.get(idx).and_then(|s| s.as_ref()).is_none() {
+			return Err(KernelErrors::EBADF);
+		}
+		let new_fd = alloc_fd(proc).ok_or(KernelErrors::EMFILE)?;
+		let old_idx = usize::try_from(old_fd).map_err(|_| KernelErrors::EBADF)?;
+		let new_idx = usize::try_from(new_fd).map_err(|_| KernelErrors::EBADF)?;
+		if old_fd >= proc.fd_table.len() as u64 || new_idx >= proc.fd_table.len() {
+			return Err(KernelErrors::EBADF);
+		}
+		let mut file = proc.fd_table[old_idx].clone().ok_or(KernelErrors::EBADF)?;
+		file.flags.remove(VfsFileOpenflags::O_CLOEXEC);
+		proc.fd_table[new_idx] = Some(file);
+		Ok(new_fd as i64)
+	})
+	.unwrap_or(Err(KernelErrors::EBADF))
+	.unwrap_or_else(neg)
+}
+
+pub fn sys_dup2(old_fd: u64, new_fd: u64) -> i64 {
+	with_current_process(|proc| {
+		if old_fd == new_fd {
+			let idx = usize::try_from(old_fd).map_err(|_| KernelErrors::EBADF)?;
+			if proc.fd_table.get(idx).and_then(|s| s.as_ref()).is_none() {
+				return Err(KernelErrors::EBADF);
+			}
+			return Ok(new_fd as i64);
+		}
+
+		let old_idx = usize::try_from(old_fd).map_err(|_| KernelErrors::EBADF)?;
+		let new_idx = usize::try_from(new_fd).map_err(|_| KernelErrors::EBADF)?;
+		if old_fd >= proc.fd_table.len() as u64 || new_idx >= proc.fd_table.len() {
+			return Err(KernelErrors::EBADF);
+		}
+		let mut file = proc.fd_table[old_idx].clone().ok_or(KernelErrors::EBADF)?;
+		file.flags.remove(VfsFileOpenflags::O_CLOEXEC);
+		proc.fd_table[new_idx] = Some(file);
+		Ok(new_fd as i64)
+	})
+	.unwrap_or(Err(KernelErrors::EBADF))
+	.unwrap_or_else(neg)
 }
 
 pub fn sys_chdir(path_ptr: u64) -> i64 {
@@ -583,13 +683,12 @@ fn sys_getdents_inner(fd: u64, dirp: u64, count: u64) -> Result<i64, KernelError
 			.get_mut(fd as usize)
 			.and_then(|slot| slot.as_mut())
 			.ok_or(KernelErrors::EBADF)?;
-		let mut new_offset = file.offset;
-		
-		let list = file.inode.getdents(&mut new_offset, count as usize)?;
+		let mut offset = *file.offset.lock();
+		let list = file.inode.getdents(&mut offset, count as usize)?;
 		if !list.is_empty() {
 			copy_to_user(dirp, &list).map_err(|_| KernelErrors::EFAULT)?;
-			file.offset = new_offset;
 		}
+		*file.offset.lock() = offset;
 		Ok(list.len() as i64)
 	}).unwrap_or(Err(KernelErrors::ESRCH))
 
@@ -627,7 +726,7 @@ pub fn sys_openat(dfd: u64, path_ptr: u64, flags: u64, mode: u64) -> i64 {
 	}
 }
 
-pub fn sys_mount(dev_name_ptr: u64, dir_name_ptr: u64, fs_type_ptr: u64, flags: u64, data_ptr: u64) -> i64 {
+pub fn sys_mount(dev_name_ptr: u64, dir_name_ptr: u64, fs_type_ptr: u64, _flags: u64, _data_ptr: u64) -> i64 {
 	let devname_bytes = match copy_user_cstr(dev_name_ptr, MAX_PATH) {
 		Ok(b) => b,
 		Err(e) => return e,

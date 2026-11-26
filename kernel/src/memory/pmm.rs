@@ -132,7 +132,7 @@ fn bitmap_set(frame_idx: u64) {
 }
 
 
-fn bitmap_set_n(start: u64, len: usize) {
+fn _bitmap_set_n(start: u64, len: usize) {
 	let mut bmap = MEMORY_BITMAP.lock();
 	for frame_idx in start..start+len as u64 {
 		let map_idx = (frame_idx >> 6) as usize;
@@ -156,14 +156,14 @@ fn bitmap_free(frame_idx: u64) {
 }
 
 //Return true is used, false if free
-fn bitmap_test(frame_idx: u64) -> bool {
+fn _bitmap_test(frame_idx: u64) -> bool {
 	let map_idx = (frame_idx >> 6) as usize;
 	let bit_idx = frame_idx & 63;
 
 	MEMORY_BITMAP.lock()[map_idx] & (1u64 << bit_idx) != 0
 }
 
-fn bitmap_find_free_chunk() -> usize {
+fn _bitmap_find_free_chunk() -> usize {
 	let bmap = MEMORY_BITMAP.lock();
 
 	for chunk_idx in 0..bmap.len() {
@@ -176,11 +176,11 @@ fn bitmap_find_free_chunk() -> usize {
 }
 
 //Return the next free frame idx
-fn bitmap_next_free() -> Option<u64> {
-	let chunk_idx = bitmap_find_free_chunk();
+fn _bitmap_next_free() -> Option<u64> {
+	let chunk_idx = _bitmap_find_free_chunk();
 	let start_frame_idx = (chunk_idx << 6) as u64;
 	for frame_idx in start_frame_idx..(start_frame_idx+64){
-		if !bitmap_test(frame_idx) {
+		if !_bitmap_test(frame_idx) {
 			return Some(frame_idx);
 		}
 	}
@@ -188,7 +188,7 @@ fn bitmap_next_free() -> Option<u64> {
 	None
 }
 
-fn bitmap_next_free_range(n: usize) -> Option<u64> {
+fn _bitmap_next_free_range(n: usize) -> Option<u64> {
 	if n == 0 { return None;}
 	let bmap = MEMORY_BITMAP.lock();
 	let mut consecutive_free = 0;
@@ -279,13 +279,6 @@ pub fn get_used_frames() -> u64 {
 
 pub fn get_total_frames() -> u64 {
 	return *TOTAL_FRAMES.lock();
-}
-
-fn is_frame_allocated_in_bmap(bmap: &[u64], frame_idx: u64) -> bool {
-	let map_idx = (frame_idx >> 6) as usize;
-	let bit_idx = frame_idx & 63;
-	assert!(map_idx < bmap.len(), "frame_idx {} out of bitmap bounds", frame_idx);
-	(bmap[map_idx] & (1u64 << bit_idx)) != 0
 }
 
 fn bitmap_alloc_range(n: usize) -> Option<u64> {

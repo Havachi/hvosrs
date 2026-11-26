@@ -7,7 +7,7 @@ use x86_64::{
 };
 
 use crate::{
-	arch::x86_64::paging::{KERNEL_PML4, switch_pml4}, drivers::keyboard::key::KeyCode::I, errno::KernelErrors, memory::{PAGE_SIZE, USER_RANGE, vmm::phys_to_virt}, syscalls::errno::EFAULT,
+	arch::x86_64::paging::{KERNEL_PML4, switch_pml4}, errno::KernelErrors, memory::{PAGE_SIZE, USER_RANGE, vmm::phys_to_virt}, syscalls::errno::EFAULT,
 };
 
 static SYSCALL_USER_CR3: AtomicU64 = AtomicU64::new(0);

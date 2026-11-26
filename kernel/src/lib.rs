@@ -88,7 +88,10 @@ macro_rules! kerror {
 
 #[macro_export]
 macro_rules! kpanic {
-	($($arg:tt)*) => { $crate::debug::_kpanic(format_args!($($arg)*)) };
+	($($arg:tt)*) => {
+		#[allow(unreachable_code)]
+		$crate::debug::_kpanic(format_args!($($arg)*))
+	};
 }
 
 pub fn limine_base_revision() -> u64 {

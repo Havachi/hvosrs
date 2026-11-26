@@ -4,7 +4,7 @@ members = [
 	"kernel",
 	"hvrunner",
 	"userland/init",
-	"userland/shell", "userland/uhv", "userland/ls",
+	"userland/shell", "userland/uhv", "userland/ls", "userland/cat"
 ]
 
 default-run = "hvrunner"

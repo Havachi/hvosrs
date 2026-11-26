@@ -153,11 +153,13 @@ pub fn read(file: &mut VfsFile, buf: &mut [u8]) -> Result<usize, KernelErrors> {
 
 	let vfs_flags = file.flags;
 
-	if vfs_flags.contains(VfsFileOpenflags::O_WRONLY) {
+	let acc_mode = vfs_flags & VfsFileOpenflags::O_ACCMODE;
+	if acc_mode == VfsFileOpenflags::O_WRONLY {
 		return Err(KernelErrors::EINVAL);
 	}
-	let n = file.inode.clone().read_at(file.offset, buf)?;
-	file.offset += n as u64;
+	let mut offset = file.offset.lock();
+	let n = file.inode.clone().read_at(*offset, buf)?;
+	*offset += n as u64;
 
 	Ok(n)
 }
@@ -166,35 +168,36 @@ pub fn write(file: &mut VfsFile,  buf: &[u8]) -> Result<usize, KernelErrors> {
 
 	let vfs_flags = file.flags;
 	let access_mode = vfs_flags & VfsFileOpenflags::O_ACCMODE;
-	if !access_mode.contains(VfsFileOpenflags::O_RDWR) {
-		if access_mode.contains(VfsFileOpenflags::O_RDONLY){
-			return Err(KernelErrors::EINVAL);
-		}
+	if access_mode == VfsFileOpenflags::O_RDONLY {
+		return Err(KernelErrors::EINVAL);
 	}
+	let mut offset = file.offset.lock();
 
 	if vfs_flags.contains(VfsFileOpenflags::O_APPEND) {
-		file.offset = file.inode.len() as u64;
+		*offset += file.inode.len() as u64;
 	}
 
-	let n = file.inode.clone().write_at(file.offset, buf)?;
-	file.offset += n as u64;
+	let n = file.inode.clone().write_at(*offset, buf)?;
+	*offset += n as u64;
 
 	Ok(n)
 }
 
 pub fn seek(file: &mut VfsFile, offset: u64, origin: SeekOrigin) -> Result<u64, KernelErrors>{
+	let mut foffset = file.offset.lock();
+
 	match origin {
 		SeekOrigin::SeekSet => {
-			file.offset = offset;
+			*foffset = offset;
 		},
 		SeekOrigin::SeekCur => {
-			file.offset += offset;
+			*foffset += offset;
 		},
 		SeekOrigin::SeekEnd => {
-			file.offset = file.len() as u64 + offset
+			*foffset = file.len() as u64 + offset
 		},
 	}
-	Ok(file.offset)
+	Ok(*foffset)
 }
 
 pub fn read_file_all(file: &mut VfsFile) -> Result<Vec<u8>, KernelErrors> {
@@ -209,7 +212,7 @@ pub fn read_file_all(file: &mut VfsFile) -> Result<Vec<u8>, KernelErrors> {
 	}
 
 	let mut buf: Vec<u8> = alloc::vec![0u8; file_len];
-	file.offset = 0;
+	*file.offset.lock() = 0;
 	let mut filled: usize = 0;
 	while filled < file_len {
 		let n = read(file, &mut buf[filled..])?;

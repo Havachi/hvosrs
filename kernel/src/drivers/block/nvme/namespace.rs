@@ -47,7 +47,7 @@ impl NvmeNamespace {
 	}
 
 	/// Max blocks we can DMA to `ptr` without crossing a page boundary (PRP1 must be contiguous).
-	fn max_blocks_in_page(ptr: *const u8, block_size: u32) -> u32 {
+	fn _max_blocks_in_page(ptr: *const u8, block_size: u32) -> u32 {
 		let page_off = ptr as usize & (PAGE_SIZE - 1);
 		let space = PAGE_SIZE - page_off;
 		(space / block_size as usize) as u32

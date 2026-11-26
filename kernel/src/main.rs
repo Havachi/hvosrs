@@ -4,7 +4,7 @@ use kernel::fs::cpio::load_initrd;
 use kernel::limine_requests::MODULES;
 use kernel::scheduler::process;
 use kernel::vfs::file::VfsFileOpenflags;
-use kernel::{cmos, drivers, interrupts, kerror, klog, scheduler, vfs};
+use kernel::{drivers, interrupts, kerror, klog, scheduler, vfs};
 use kernel::{kprint, memory};
 use kernel::arch::x86_64::{
     cpu, gdt, idt, syscall

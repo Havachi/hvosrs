@@ -268,7 +268,7 @@ impl Inode for Ext2Vnode {
 		Ok(Arc::new(Ext2Vnode::from_raw(new_ino, raw_ino, self.sb.clone())))
 	}
 
-	fn mknod(self: alloc::sync::Arc<Self>, name: &str, mode: u16, dev_id: crate::vfs::inode::DeviceId) -> Result<(), crate::errno::KernelErrors> {
+	fn mknod(self: alloc::sync::Arc<Self>, _: &str, _: u16, _: crate::vfs::inode::DeviceId) -> Result<(), crate::errno::KernelErrors> {
 		Err(KernelErrors::ENOSYS)
 	}
 
@@ -452,7 +452,7 @@ impl Inode for Ext2Vnode {
 		todo!()
 	}
 
-	fn readdir(self: alloc::sync::Arc<Self>, index: u64) -> Result<Option<crate::vfs::dentry::VfsDirent>, crate::errno::KernelErrors> {
+	fn readdir(self: alloc::sync::Arc<Self>, _: u64) -> Result<Option<crate::vfs::dentry::VfsDirent>, crate::errno::KernelErrors> {
 		todo!()
 	}
 

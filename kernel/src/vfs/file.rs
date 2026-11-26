@@ -10,7 +10,7 @@ pub const S_IFBLK: u32 = 0o060000;
 pub const S_IFREG: u32 = 0o100000;
 
 bitflags! {
-	#[derive(Debug, Clone, Copy)]
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 	pub struct VfsFileOpenflags: u32 {
 		const O_PATH 		= 	0o010000000;
 		const O_SYNC		= 	0o004010000;
@@ -45,13 +45,13 @@ pub const AT_FDCWD: i64 = -100;
 #[derive(Clone)]
 pub struct VfsFile {
 	pub inode: Arc<dyn Inode>,
-	pub offset: u64,
+	pub offset: Arc<spin::Mutex<u64>>,
 	pub flags: VfsFileOpenflags
 }
 
 impl VfsFile {
 	pub fn new(inode: Arc<dyn Inode>, offset: u64, flags: VfsFileOpenflags) -> Self {
-		Self { inode, offset, flags }
+		Self { inode, offset: Arc::new(spin::Mutex::new(offset)), flags }
 	}
 	pub fn len(&self) -> usize {
 		self.inode.len()
@@ -60,6 +60,6 @@ impl VfsFile {
 
 impl Debug for VfsFile {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		f.debug_struct("VfsFile").field("inode", &self.inode.id()).field("offset", &self.offset).field("flags", &self.flags).finish()
+		f.debug_struct("VfsFile").field("inode", &self.inode.id()).field("offset", &self.offset.as_ref().lock()).field("flags", &self.flags).finish()
 	}
 }

@@ -14,8 +14,8 @@ use crate::{arch::x86_64::{
 		new_page_table,
 		switch_pml4
 	},
-	syscall::{SyscallFrame, fork_child_return}}, elf::load_elf, errno::KernelErrors, klog, ksprint, memory::{PAGE_SIZE, USER_HEAP_START, USER_RANGE_END, allocate_n_pages,
-	pmm::{KERNEL_FRAME_ALLOCATOR, PhysAllocator, get_used_frames}, virt_to_phys_dyn}, scheduler::{CURRENT_KSTACK_TOP, CURRENT_PID, MAX_PROCESS, PROCESS_TABLE, Priority, exit_to_user}, syscalls::push_args_to_user_stack, vfs::{dentry::VfsDentry, file::VfsFile}
+	syscall::{SyscallFrame, fork_child_return}}, elf::load_elf, errno::KernelErrors, fs::tty, klog, ksprint, memory::{PAGE_SIZE, USER_HEAP_START, USER_RANGE_END, allocate_n_pages,
+	pmm::{KERNEL_FRAME_ALLOCATOR, PhysAllocator, get_used_frames}, virt_to_phys_dyn}, scheduler::{CURRENT_KSTACK_TOP, CURRENT_PID, MAX_PROCESS, PROCESS_TABLE, Priority, exit_to_user, wake_by_blockedby}, syscalls::push_args_to_user_stack, vfs::{dentry::VfsDentry, file::{VfsFile, VfsFileOpenflags}, inode::VfsInodeType}
 };
 
 pub type ProcessId = u32;
@@ -35,7 +35,8 @@ pub enum ProcessState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockedBy {
 	Stdin,
-	Child
+	Child,
+	Pipe,
 }
 
 #[repr(C, packed)]
@@ -85,6 +86,7 @@ pub struct Process {
 	pub heap_start: u64,
 	pub brk: u64,
 	pub cwd: Option<Arc<VfsDentry>>,
+	pub syscall_user_cr3: u64,
 }
 
 
@@ -108,7 +110,14 @@ impl Process {
 			exit_to_user as *const () as u64
 		);
 		
-		let fd_table = [const {None}; MAX_FD_PER_PROCESS];
+		let mut fd_table = [const {None}; MAX_FD_PER_PROCESS];
+		let stdout = VfsFile::new(tty::stdout(), 0, VfsFileOpenflags::O_RDWR);
+		let stdin = VfsFile::new(stdout.inode.clone(), 0, VfsFileOpenflags::O_RDWR);
+		let stderr = VfsFile::new(tty::stderr(), 0, VfsFileOpenflags::O_RDWR);
+
+		fd_table[0] = Some(stdout);
+		fd_table[1] = Some(stdin);
+		fd_table[2] = Some(stderr);
 		let root_ino = crate::vfs::lookup("/", None).ok();
 
 
@@ -132,6 +141,7 @@ impl Process {
 			heap_start: USER_HEAP_START,
 			brk: USER_HEAP_START,
 			cwd: root_ino,
+			syscall_user_cr3: 0,
 		}
 	}
 
@@ -175,6 +185,7 @@ impl Process {
 			heap_start: 0,
 			brk: 0,
 			cwd: None,
+			syscall_user_cr3: 0,
 		}
 	}
 
@@ -244,6 +255,7 @@ pub fn fork_child_from(parent: &Process, frame: &SyscallFrame) -> Result<Process
 			heap_start: parent.heap_start,
 			brk: parent.brk,
 			cwd: parent.cwd.clone(),
+			syscall_user_cr3: 0,
 		}
 	)
 
@@ -278,7 +290,7 @@ pub fn get_next_pid() -> ProcessId {
 	NEXT_PID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
 }
 
-pub fn exec_replace_image(process: &mut Process, elf_bytes: &[u8], argv: &[Vec<u8>]) -> Result<(u64, u64), KernelErrors> {
+pub fn exec_replace_image(process: &mut Process, elf_bytes: &[u8], argv: &[Vec<u8>], envp: &[Vec<u8>]) -> Result<(u64, u64), KernelErrors> {
 	let old_cr3 = process.cr3;
 	let old_kstack_top = process.kstack_top;
 
@@ -290,7 +302,7 @@ pub fn exec_replace_image(process: &mut Process, elf_bytes: &[u8], argv: &[Vec<u
 	let res = (|| -> Result<(u64,u64), KernelErrors> {
 		let entry = load_elf(elf_bytes).map_err(|_| KernelErrors::EINVAL)?;
 		let stack_top = map_user_stack_in_current_cr3(PROCESS_BASE_NB_PAGE)?;
-		let user_rsp = push_args_to_user_stack(stack_top, argv)?;
+		let user_rsp = push_args_to_user_stack(stack_top, argv, envp)?;
 		Ok((entry, user_rsp))
 	})();
 	unsafe { switch_pml4(kernel_cr3) };
@@ -345,13 +357,14 @@ pub fn map_user_stack_in_current_cr3(nb_pages: usize) -> Result<u64, KernelError
 
 }
 
-/// `argc = 0`, then a NULL argv terminator. `rsp` stays 16-byte aligned, which
-/// the naked `_start` `call` requires.
+/// `argc = 0`, an empty `argv`, and an empty `envp`. Three words is an odd count,
+/// so one padding slot keeps `rsp` 16-byte aligned for the naked `_start` `call`.
 fn write_empty_argv_frame(stack_top: u64) -> u64 {
-	let rsp = stack_top - 16;
+	let rsp = stack_top - 32;
 	unsafe {
 		*(rsp as *mut u64) = 0;
 		*((rsp + 8) as *mut u64) = 0;
+		*((rsp + 16) as *mut u64) = 0;
 	}
 	rsp
 }
@@ -420,6 +433,7 @@ pub fn has_waitable_child(parent_pid: ProcessId) -> bool {
 pub fn reap(pid: ProcessId) {
 	let used_before = get_used_frames() as i64;
 	let mut pt = PROCESS_TABLE.lock();
+	let mut wakepipes= false;
 	if let Some(proc) = pt[pid as usize].take().as_mut() {
 		if proc.pid == 0 { drop(pt);return; }
 		let mut allocator = KERNEL_FRAME_ALLOCATOR.lock();
@@ -429,7 +443,14 @@ pub fn reap(pid: ProcessId) {
 		free_kernel_stack(proc.kstack_top);
 
 		for fd in proc.fd_table.as_mut() {
-			fd.take();
+
+			let file = fd.take();
+
+			if file.is_some() {
+				if file.unwrap().inode.itype() == VfsInodeType::FIFO {
+					wakepipes = true;
+				}
+			}
 		}
 
 	}
@@ -437,6 +458,9 @@ pub fn reap(pid: ProcessId) {
 	let freed = used_before - used_after;
 	klog!("Reap freed {} frames", freed);
 	drop(pt);
+	if wakepipes {
+		wake_by_blockedby(BlockedBy::Pipe);
+	}
 }
 
 /// Kernel stacks live in `KERNEL_DYNAMIC_MEM` at bump-allocated virtual addresses backed by
@@ -478,5 +502,15 @@ pub fn set_cwd(cwd: Arc<VfsDentry>){
 	let mut pt = PROCESS_TABLE.lock();
 	if let Some(proc) = pt[current_pid as usize].as_mut() {
 		proc.cwd = Some(cwd);
+	}
+}
+
+pub fn get_file(fd: u64) -> Option<VfsFile>{
+	let current_pid = CURRENT_PID.load(core::sync::atomic::Ordering::Relaxed);
+	let pt = PROCESS_TABLE.lock();
+	if let Some(proc) = pt[current_pid as usize].as_ref() {
+		proc.fd_table[fd as usize].clone()
+	} else {
+		None
 	}
 }

@@ -4,10 +4,12 @@ use core::sync::atomic::{AtomicIsize, AtomicPtr, Ordering};
 
 static ARGC: AtomicIsize = AtomicIsize::new(0);
 static ARGV: AtomicPtr<*const u8> = AtomicPtr::new(core::ptr::null_mut());
+static ENVP: AtomicPtr<*const u8> = AtomicPtr::new(core::ptr::null_mut());
 
-pub unsafe fn init_args(argc: isize, argv: *const *const u8) {
+pub unsafe fn init_args(argc: isize, argv: *const *const u8, envp: *const *const u8) {
 	ARGC.store(argc.max(0), Ordering::Release);
 	ARGV.store(argv as *mut *const u8, Ordering::Release);
+	ENVP.store(envp as *mut *const u8, Ordering::Release);
 }
 
 pub struct ArgsIter {

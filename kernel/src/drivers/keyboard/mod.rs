@@ -3,7 +3,7 @@ pub mod key;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
-use crate::{drivers::{io::STDIN_BUFFER, keyboard::key::{KeyCode, map_extended_scancode, map_scancode}}, errno::KernelErrors, klog, scheduler::unblock_stdin};
+use crate::{drivers::{io::STDIN_BUFFER, keyboard::key::{KeyCode, map_extended_scancode, map_scancode}}, errno::KernelErrors, klog, scheduler::{process::BlockedBy, wake_by_blockedby}};
 
 pub static KEYBOARD: Mutex<KeyboardState> = Mutex::new(KeyboardState::new());
 
@@ -55,12 +55,12 @@ pub fn handle_scancode(scancode: u8) -> Result<(), KernelErrors> {
 						for b in seq {
 							stdin_buffer.push(b)?;
 						}
-						unblock_stdin();
+						wake_by_blockedby(BlockedBy::Stdin);
 					} else {
 						let c = kbd.to_ascii(key);
 						if c != '\0' {
 							stdin_buffer.push(c as u8)?;
-							unblock_stdin();
+							wake_by_blockedby(BlockedBy::Stdin);
 						}
 					}
 				}

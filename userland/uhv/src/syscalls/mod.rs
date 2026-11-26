@@ -5,18 +5,18 @@ use macros::*;
 mod rax;
 use rax::*;
 
-use crate::{Stat, SysTime};
+use crate::SysTime;
 
 pub fn read(fd: i64, buf: &mut [u8]) -> i64 {
 	unsafe { syscall3(SYS_READ, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64) }
 }
 
-pub fn write(fd: i64, buf: &[u8]) {
-	let _ = unsafe { syscall3(SYS_WRITE, fd as u64, buf.as_ptr() as u64, buf.len() as u64) };
+pub fn write(fd: i64, buf: &[u8]) -> i64 {
+	unsafe { syscall3(SYS_WRITE, fd as u64, buf.as_ptr() as u64, buf.len() as u64) }
 }
 
-pub fn write_str(fd: i64, s: &str) {
-	let _ = unsafe { syscall3(SYS_WRITE, fd as u64, s.as_ptr() as u64, s.len() as u64) };
+pub fn write_str(fd: i64, s: &str) -> i64 {
+	unsafe { syscall3(SYS_WRITE, fd as u64, s.as_ptr() as u64, s.len() as u64) }
 }
 
 pub fn open(path: &[u8], flags: u64) -> i64 {
@@ -87,7 +87,8 @@ pub fn waitid(idtype: u64, id:u64, infop: u64, option: u64) -> i64 {
 }
 
 pub fn stat(path: &str, statbuf: &mut [u8]) -> i64 {
-	unsafe { syscall2(SYS_STAT, path.as_ptr() as u64, statbuf.as_mut_ptr() as u64) }
+	let buf = path_cstr(path);
+	unsafe { syscall2(SYS_STAT, buf.as_ptr() as u64, statbuf.as_mut_ptr() as u64) }
 }
 
 pub fn fstat(fd: u64, statbuf: &mut [u8]) -> i64 {
@@ -116,4 +117,16 @@ fn path_cstr(path: &str) -> alloc::vec::Vec<u8> {
 pub fn sys_clock_gettime(which: u64, dt: &mut SysTime) {
 	let dt_ptr = dt as *mut SysTime as u64;
 	unsafe { syscall2(SYS_CLOCK_GETTIME, which, dt_ptr) };
+}
+
+pub fn pipe(fds: &mut [i32; 2]) -> i64 {
+	unsafe { syscall1(SYS_PIPE, fds.as_mut_ptr() as u64) }
+}
+
+pub fn dup(oldfd: u64) -> i64 {
+	unsafe { syscall1(SYS_DUP, oldfd) }
+}
+
+pub fn dup2(oldfd: u64, newfd: u64) -> i64 {
+	unsafe { syscall2(SYS_DUP2, oldfd, newfd) }
 }

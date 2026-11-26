@@ -2,7 +2,7 @@ use core::sync::atomic::Ordering::Relaxed;
 
 use x86_64::instructions::port::Port;
 
-use crate::{arch::x86_64::idt::{KEYBOARD_INT_VECTOR, TIMER_INT_VECTOR}, drivers::acpi::{INTERRUPT_OVERRIDE, IOAPIC, ISO_COUNT}, kerror, time::EPOCH};
+use crate::{arch::x86_64::idt::{KEYBOARD_INT_VECTOR, TIMER_INT_VECTOR}, drivers::acpi::{INTERRUPT_OVERRIDE, IOAPIC, ISO_COUNT}, kerror};
 
 pub const PIT_HZ: u32 = 100;
 

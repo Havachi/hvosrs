@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec};
 use bitflags::bitflags;
 use spin::Mutex;
 
-use crate::{drivers::block::BlockDevice, errno::KernelErrors, fs::ext2::{EXT2_FSNAME, EXT2_ROOT_INO, group::{Ext2BGDRaw, Ext2BGDT}, inode::{Ext2InodeRaw, Ext2Vnode}, lba_conv}, kerror, klog, vfs::{InodeId, filesystem::FST_REG, superblock::{Statfs, Superblock}}};
+use crate::{drivers::block::BlockDevice, errno::KernelErrors, fs::ext2::{EXT2_FSNAME, EXT2_ROOT_INO, group::{Ext2BGDRaw, Ext2BGDT}, inode::{Ext2InodeRaw, Ext2Vnode}, lba_conv}, vfs::{InodeId, filesystem::FST_REG, superblock::{Statfs, Superblock}}};
 
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
@@ -345,7 +345,7 @@ impl Ext2Sb {
 
 		let target_fs_block = table_start_block + block_offset;
 		let mut blkbuf = alloc::vec![0u8; fs_blk_size];
-		self.read_block(target_fs_block, &mut blkbuf);
+		self.read_block(target_fs_block, &mut blkbuf)?;
 
 		unsafe {
 			core::ptr::write_unaligned(
@@ -496,7 +496,7 @@ impl Ext2Sb {
 				let byte_idx = bit_idx / 8;
 				let bit_in_byte = bit_idx % 8;
 				bitmap_buf[byte_idx] |= 1 << bit_in_byte;
-				self.write_block(bitmap_block, &bitmap_buf);
+				self.write_block(bitmap_block, &bitmap_buf)?;
 				meta.bgdt.table[bg].nb_free_blocks -= 1;
 				meta.raw_sb.free_blocks -= 1;
 				self.flush_bgdt_entry(&meta.bgdt, bg, meta.raw_sb.super_block_id)?;
@@ -572,7 +572,7 @@ impl Ext2Sb {
 			Ok(new_blk)
 		};
 
-		let mut ensure_indirect_entry = 
+		let ensure_indirect_entry = 
 			|parent_block: u32, index: u64, alloc_fn: &mut dyn FnMut() -> Result<u32, KernelErrors>| -> Result<u32, KernelErrors> {
 				let mut buf = alloc::vec![0u8; block_size as usize];
 				self.read_block(parent_block as u64, &mut buf)?;

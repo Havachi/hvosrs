@@ -5,6 +5,8 @@ pub mod dirent;
 pub mod cpio;
 pub mod ext2;
 pub mod devtmpfs;
+pub mod tty;
+pub mod pipe;
 
 pub fn init() {
 

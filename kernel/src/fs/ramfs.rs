@@ -180,7 +180,7 @@ impl Inode for RamFsInode {
 		return Ok(());	
 	}
 
-	fn create(self: Arc<Self>, basename: &str, mode: u16) -> Result<Arc<dyn Inode>, KernelErrors> {
+	fn create(self: Arc<Self>, basename: &str, _: u16) -> Result<Arc<dyn Inode>, KernelErrors> {
 		if !self.is_dir() || self.dir.is_none() {
 			return Err(ENOTDIR);
 		}
@@ -199,7 +199,7 @@ impl Inode for RamFsInode {
 		Ok(child.clone())
 	}
 	
-	fn mkdir(self: Arc<Self>, basename: &str, mode: u16) -> Result<Arc<dyn Inode>, KernelErrors> {
+	fn mkdir(self: Arc<Self>, basename: &str, _: u16) -> Result<Arc<dyn Inode>, KernelErrors> {
 		if !self.is_dir() || self.dir.is_none() {
 			return Err(ENOTDIR);
 		}

@@ -7,15 +7,14 @@ extern crate alloc;
 extern "Rust" fn main(argc: isize, _argv: *const *const u8) -> i32 {
     let mut args = uhv::args::args_lossy_skip_invalid().skip(1).peekable();
 
-    let path =
-    if argc < 2 {
-        str::from_utf8(&[b'.', b'\0']).ok()
+    let path = if argc < 2 {
+        "."
     } else {
-        args.next()
+        args.next().unwrap_or(".")
     };
 
-    if let Some(path) = path {
-
+    if !path.is_empty() {
+        
 	    let f = open(
 		    path.as_bytes(), 
 	    	(VfsFileOpenflags::O_DIRECTORY | VfsFileOpenflags::O_CLOEXEC | VfsFileOpenflags::O_NONBLOCK | VfsFileOpenflags::O_RDONLY).bits() as u64

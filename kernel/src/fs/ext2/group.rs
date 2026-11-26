@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec, vec};
-use crate::{drivers::block::BlockDevice, errno::KernelErrors, fs::ext2::{lba_conv, superblock::Ext2SuperblockRaw}, klog, vfs::InodeId, };
+use crate::{drivers::block::BlockDevice, errno::KernelErrors, fs::ext2::{lba_conv, superblock::Ext2SuperblockRaw}};
 
 
 
@@ -17,7 +17,6 @@ pub struct Ext2BGDRaw {
 
 pub struct Ext2BGDT {
 	pub table: Vec<Ext2BGDRaw>,
-	nb_bg: u64,
 }
 
 impl Ext2BGDT {
@@ -42,7 +41,6 @@ impl Ext2BGDT {
 			.collect();
 		Ok(Self {
 			table,
-			nb_bg: total_bgd as u64,
 		})
 	}
 }

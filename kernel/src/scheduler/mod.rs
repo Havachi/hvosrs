@@ -214,6 +214,13 @@ pub fn schedule() {
 	let mut dummy_rsp: u64 = 0;
 	let old_rsp_ptr: *mut u64 = &mut dummy_rsp as *mut u64;
 	let current_pid: u32 = CURRENT_PID.load(core::sync::atomic::Ordering::Acquire);
+	// 0xFFFF means no process is current yet. The table only has MAX_PROCESS slots.
+	if (current_pid as usize) < MAX_PROCESS {
+		let mut pt = PROCESS_TABLE.lock();
+		if let Some(proc) = pt[current_pid as usize].as_mut() {
+			proc.syscall_user_cr3 = crate::syscalls::user_access::active_user_cr3();
+		}
+	}
 
 	let mut sched = SCHEDULER.lock();
 	if current_pid == 0 && sched.run_queues.iter().all(|q| q.is_empty()) {
@@ -237,6 +244,14 @@ pub fn schedule() {
 	}
 	unsafe {
 		context_switch(final_old_rsp, new_rsp, new_cr3);
+	}
+	// Runs in the process that just woke up. Put its user cr3 back before copy_to_user.
+	let pid: u32 = CURRENT_PID.load(core::sync::atomic::Ordering::Acquire);
+	if (pid as usize) < MAX_PROCESS {
+		let pt = PROCESS_TABLE.lock();
+		if let Some(proc) = pt[pid as usize].as_ref() {
+			crate::syscalls::user_access::set_user_cr3(proc.syscall_user_cr3);
+		}
 	}
 }
 
@@ -319,7 +334,14 @@ pub fn wake_process() {
 	drop(sched);
 
 }
-pub fn unblock_stdin() {
+pub fn wake_by_blockedby(reason: BlockedBy) {
+	match reason {
+		BlockedBy::Stdin | BlockedBy::Pipe => unblock_reason(reason),
+		BlockedBy::Child => todo!(),
+	}
+}
+
+fn unblock_reason(reason: BlockedBy) {
 	let mut sched = SCHEDULER.lock();
 	let mut prev_pid: Option<ProcessId> = None;
 	let mut current_node = sched.blocked_queue.head;
@@ -332,7 +354,7 @@ pub fn unblock_stdin() {
 		let mut should_wake = false;
 		let mut prio = Priority::Critial;
 		if let Some(proc) = pt[pid as usize].as_mut() {
-			if proc.blocked_by == Some(BlockedBy::Stdin) && proc.state == ProcessState::Blocked {
+			if proc.blocked_by == Some(reason) && proc.state == ProcessState::Blocked {
 				should_wake = true;
 				prio = proc.priority;
 				proc.unblock();

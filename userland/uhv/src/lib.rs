@@ -42,7 +42,11 @@ pub struct Stdout;
 
 impl core::fmt::Write for Stdout {
 	fn write_str(&mut self, s: &str) -> core::fmt::Result {
-		write(1, s.as_bytes());
+		let ret = write(1, s.as_bytes());
+		if ret < 0 {
+			eprintln!("write: {}", errno_to_str(ret));
+			return Err(core::fmt::Error)
+		}
 		Ok(())
 	}
 }
@@ -110,6 +114,7 @@ pub fn errno_to_str(err: i64) -> &'static str {
 		-22 => "Invalid argument",
 		-27 => "File too large",
 		-28 => "No space left on device",
+		-32 => "Broken pipe",
 		-38 => "Function not implemented",
 		-62 => "Timer expired",
 		-110 => "Connection timed out",
@@ -311,7 +316,8 @@ mod time {
 
 
 unsafe extern "Rust" {
-	fn main(argc: isize, argv: *const *const u8) -> i32;
+	fn 
+	main(argc: isize, argv: *const *const u8, envp: *const *const u8) -> i32;
 }
 
 /// Process entry. Must be naked: a Rust prologue would push a register and
@@ -330,8 +336,10 @@ pub unsafe extern "C" fn _start() -> ! {
 
 unsafe extern "C" fn rust_start(argc: isize, argv: *const *const u8) -> ! {
 	unsafe {
-		init_args(argc, argv);
-		let code = main(argc, argv);
+		// The kernel lays out [argc][argv...][NULL][envp...][NULL].
+		let envp = argv.add(argc.max(0) as usize + 1);
+		init_args(argc, argv, envp);
+		let code = main(argc, argv, envp);
 		exit(code as u32);
 	}
 }

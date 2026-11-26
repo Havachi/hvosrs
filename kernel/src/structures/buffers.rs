@@ -1,6 +1,7 @@
 use crate::errno::KernelErrors;
 
 
+#[derive(Debug)]
 pub struct CircularBuffer<T, const N:usize> {
 	buffer: [T; N],
 	head: usize,

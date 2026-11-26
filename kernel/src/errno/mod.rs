@@ -53,10 +53,16 @@ pub enum KernelErrors {
 	EISDIR = 21,
 	///Invalid argument
 	EINVAL = 22,
+	///File table overflow 
+	ENFILE = 23,
+	///Too many open files
+	EMFILE = 24,
 	///File too large
 	EFBIG = 27,
 	///No space left on device
 	ENOSPC = 28,
+	///Broken pipe
+	EPIPE = 32,
 	///Function not implemented
 	ENOSYS = 38,
 	///Timer expired

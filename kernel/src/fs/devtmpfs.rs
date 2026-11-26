@@ -122,7 +122,7 @@ impl Inode for DevInode {
 
 	}
 
-	fn create(self: Arc<Self>, basename: &str, mode: u16) -> Result<Arc<dyn Inode>, KernelErrors> {
+	fn create(self: Arc<Self>, basename: &str, _mode: u16) -> Result<Arc<dyn Inode>, KernelErrors> {
 		if !self.is_dir() || self.dir.is_none() {
 			return Err(ENOTDIR);
 		}
@@ -161,7 +161,7 @@ impl Inode for DevInode {
 		Ok(())
 	}
 
-	fn mkdir(self: Arc<Self>, name: &str, mode: u16) -> Result<Arc<dyn Inode>, KernelErrors> {
+	fn mkdir(self: Arc<Self>, name: &str, _mode: u16) -> Result<Arc<dyn Inode>, KernelErrors> {
 		if !self.is_dir() || self.dir.is_none() {
 			return Err(ENOTDIR);
 		}
@@ -381,3 +381,4 @@ pub const fn makedev(major:u16, minor: u16) -> u64 {
 		| (((minor as u64) & ! 0xFF) << 12)
 		| (((major as u64) & ! 0xFFF) << 32)
 }
+

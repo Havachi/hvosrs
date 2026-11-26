@@ -3,7 +3,7 @@ use core::ptr::{self, null_mut};
 use alloc::{string::{String, ToString}, vec::Vec, vec};
 use uhv::*;
 
-use crate::{Env, join_pwd};
+use crate::{Env, ShellVar, join_pwd};
 
 pub const HELP_STR: [(&str, &str); 9] = [
 	("cd", "[DIR]"),
@@ -18,7 +18,8 @@ pub const HELP_STR: [(&str, &str); 9] = [
 ];
 
 pub fn pwd(env: &Env) -> Result<(), i64> {
-	println!("{}", env.pwd);
+	let ShellVar::Str(pwd) = env.get_var(&"PWD".to_string()).ok_or(127)? else {return Err(127)};
+	println!("{}", pwd);
 	Ok(())
 }
 
@@ -36,8 +37,9 @@ pub fn cd(env: &mut Env, arg: &Vec<String>) -> Result<(), i64> {
 	if res < 0 {
 		return Err(res);
 	}
-	
-	env.pwd = join_pwd(&env.pwd, path);
+	let ShellVar::Str(current_pwd) = env.get_var(&"PWD".to_string()).ok_or(127)? else {return Err(127)};
+	let new_pwd = join_pwd(&current_pwd, path);
+	env.set_var("PWD".to_string(), ShellVar::Str(new_pwd));
 	env.update();
 	Ok(())
 }

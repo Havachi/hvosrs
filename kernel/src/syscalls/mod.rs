@@ -1,6 +1,6 @@
 mod errno;
 mod handlers;
-mod user_access;
+pub mod user_access;
 
 use core::sync::atomic::Ordering;
 
@@ -8,7 +8,7 @@ use alloc::vec::{Vec};
 use x86_64::registers::rflags::RFlags;
 
 use crate::{
-	arch::x86_64::{asm::current_cr3, syscall::SyscallFrame}, errno::KernelErrors, klog, kstrace, memory::USER_RANGE, scheduler::{CURRENT_PID, with_current_process}, syscalls::{
+	arch::x86_64::{asm::current_cr3, syscall::SyscallFrame}, errno::KernelErrors, klog, memory::USER_RANGE, scheduler::{CURRENT_PID, with_current_process}, syscalls::{
 		handlers::*, user_access::{clear_user_cr3, copy_from_user_into, copy_user_cstr, enter_kernel_page_table, leave_kernel_page_table, set_user_cr3},
 	},
 };
@@ -29,10 +29,12 @@ const fn make_table() -> [SyscallFn; NR_SYSCALLS] {
 	t[SYS_STAT] = |_, path, buf, _, _, _, _| sys_stat(path, buf);
 	t[SYS_FSTAT] = |_, fd, buf, _, _, _, _| sys_fstat(fd, buf);
 	t[SYS_LSTAT] = |_, path, buf, _, _, _, _| sys_lstat(path, buf);
-
 	t[SYS_LSEEK] = |_, fd, offset, whence, _, _, _| sys_lseek(fd as i32, offset as i64, whence as i32);
 	t[SYS_BRK] = |_,addr,_,_,_,_,_| sys_brk(addr);
 	t[SYS_PWRITE64] = |_, fd, buf, len, pos, _, _| sys_pwrite64(fd as i32, buf, len as usize, pos);
+	t[SYS_PIPE] = |_, fildes,_,_,_,_,_| sys_pipe(fildes);
+	t[SYS_DUP] = |_, old_fd, _, _,_,_,_| sys_dup(old_fd);
+	t[SYS_DUP2] = |_, old_fd, new_fd, _,_,_,_| sys_dup2(old_fd, new_fd);
 	t[SYS_GETPID] = |_,_,_,_,_,_,_|  sys_getpid();
 	t[SYS_FORK] = |_,_,_,_,_,_,f| sys_fork(f);
 	t[SYS_EXECVE] = |_,path,argv,envp,_,_,f| sys_execve(path, argv, envp, f);
@@ -154,23 +156,72 @@ pub fn copy_user_args(argv_ptr: u64, fallback_arg0: &[u8]) -> Result<Vec<Vec<u8>
 	Ok(args)
 }
 
-pub fn push_args_to_user_stack(mut rsp: u64, argv: &[Vec<u8>]) -> Result<u64, KernelErrors> {
+/// `envp_ptr == 0` is an empty environment. A non-null pointer is a NULL-terminated
+/// array of C strings, same layout as `argv`.
+pub fn copy_user_env(envp_ptr: u64) -> Result<Vec<Vec<u8>>, KernelErrors> {
+	if envp_ptr == 0 {
+		return Ok(Vec::new());
+	}
+
+	let mut env = Vec::new();
+	for i in 0..MAX_ARGS {
+		let slot_addr = envp_ptr
+			.checked_add((i * core::mem::size_of::<u64>()) as u64)
+			.ok_or(KernelErrors::EFAULT)?;
+		if !USER_RANGE.contains(slot_addr) {
+			return Err(KernelErrors::EFAULT);
+		}
+
+		let mut ptr_buf = [0u8; 8];
+		copy_from_user_into(&mut ptr_buf, slot_addr).map_err(|_| KernelErrors::EFAULT)?;
+		let str_ptr = u64::from_le_bytes(ptr_buf);
+		if str_ptr == 0 {
+			break;
+		}
+		if !USER_RANGE.contains(str_ptr) {
+			return Err(KernelErrors::EFAULT);
+		}
+		let mut bytes = copy_user_cstr(str_ptr, MAX_ARG_LEN).map_err(|_| KernelErrors::EFAULT)?;
+		bytes.push(0);
+		env.push(bytes);
+	}
+	Ok(env)
+}
+
+fn push_user_cstr(rsp: &mut u64, bytes: &[u8]) -> Result<u64, KernelErrors> {
+	let len = bytes.len();
+	let total_bytes = len.checked_add(1).ok_or(KernelErrors::EINVAL)? as u64;
+	*rsp = rsp.checked_sub(total_bytes).ok_or(KernelErrors::EINVAL)?;
+	unsafe {
+		core::ptr::copy_nonoverlapping(bytes.as_ptr(), *rsp as *mut u8, len);
+		*((*rsp + len as u64) as *mut u8) = 0;
+	}
+	Ok(*rsp)
+}
+
+pub fn push_args_to_user_stack(mut rsp: u64, argv: &[Vec<u8>], envp: &[Vec<u8>]) -> Result<u64, KernelErrors> {
 	let mut arg_ptrs: Vec<u64> = Vec::with_capacity(argv.len());
 	for arg in argv {
-		let len = arg.len();
-		let total_bytes = len.checked_add(1).ok_or(KernelErrors::EINVAL)? as u64;
-		rsp = rsp.checked_sub(total_bytes).ok_or(KernelErrors::EINVAL)?;
-
-		unsafe {
-			core::ptr::copy_nonoverlapping(arg.as_ptr(), rsp as *mut u8, len);
-			*((rsp + len as u64) as *mut u8) = 0;
-		}		
-		arg_ptrs.push(rsp);
+		arg_ptrs.push(push_user_cstr(&mut rsp, arg)?);
 	}
-	let total_words = arg_ptrs.len() + 2;
+	let mut env_ptrs: Vec<u64> = Vec::with_capacity(envp.len());
+	for var in envp {
+		env_ptrs.push(push_user_cstr(&mut rsp, var)?);
+	}
+
+	// argc, argv pointers, argv NULL, env pointers, env NULL.
+	let total_words = arg_ptrs.len() + env_ptrs.len() + 3;
 	rsp &= !0xF;
 	if total_words % 2 == 1 {
 		rsp = rsp.checked_sub(8).ok_or(KernelErrors::EINVAL)?;
+	}
+
+	// High addresses first: env NULL, then env pointers, then argv NULL, argv, argc.
+	rsp = rsp.checked_sub(8).ok_or(KernelErrors::EINVAL)?;
+	unsafe { *(rsp as *mut u64) = 0; }
+	for &ptr in env_ptrs.iter().rev() {
+		rsp = rsp.checked_sub(8).ok_or(KernelErrors::EINVAL)?;
+		unsafe { *(rsp as *mut u64) = ptr; }
 	}
 
 	rsp = rsp.checked_sub(8).ok_or(KernelErrors::EINVAL)?;

@@ -11,12 +11,13 @@ use uhv::*;
 extern crate alloc;
 
 pub fn init(env: &mut Env) {
-	env.pwd = String::from("/");
 	env.history = Vec::new();
-	env.prompt = String::from(format!("\x1b[92m-> \x1b[0m\x1b[94m{}\x1b[0m > ", env.pwd));
+	env.prompt = String::from(format!("\x1b[92m-> \x1b[0m\x1b[94m{}\x1b[0m > ", String::from("/")));
 	env.vars = BTreeMap::new();
 	env.vars.insert(String::from("?"), ShellVar::Int(0));
 	env.vars.insert(String::from("PATH"), ShellVar::Str(String::from("/bin")));
+	env.vars.insert(String::from("PWD"), ShellVar::Str(String::from("/")));
+
 }
 
 #[unsafe(no_mangle)]
@@ -105,23 +106,80 @@ fn repl(env: &mut Env, buf: &Vec<u8>) -> Result<(), i64> {
 		return set_var(env, &parsed[0]);
 	}
 
+	//contains a pipe, so go in pipe mode
+	if buf.contains(&b'|') {
+		let mut pipeidx = 0;
+		for i in 0..parsed.len() {
+			if parsed[i] == "|".to_string(){
+				pipeidx = i;
+				break;
+			}
+		}
+		if pipeidx == 0 || pipeidx + 1 >= parsed.len() {
+			return Err(127);
+		}
 
-	let path = match  resolve_prog_path(env, &args) {
+		let mut full_left_cmd = Vec::from(&parsed[..pipeidx]);
+		let mut full_right_cmd = Vec::from(&parsed[pipeidx+1..]);
+		full_left_cmd[0] = resolve_prog_path(env, &full_left_cmd[0])?;
+		full_right_cmd[0] = resolve_prog_path(env, &full_right_cmd[0])?;
+
+		let mut fds = [0i32; 2];
+		let ret = pipe(&mut fds);
+		if ret < 0 {
+			return Err(ret);
+		}
+		let read_fd = fds[0] as i64;
+		let write_fd = fds[1] as i64;
+
+		let fret1 = fork();
+		if fret1 == 0 {
+			let dupret = dup2(write_fd as u64, 1);
+			if dupret < 0 {
+				eprintln!("error during dup: {}", errno_to_str(dupret));
+				exit(1);
+			}
+			close(read_fd);
+			close(write_fd);
+			exec_program(env, &full_left_cmd[0], &full_left_cmd);
+		} else if fret1 > 0 {
+			let fret2 = fork();
+			if fret2 == 0 {
+				let dupret = dup2(read_fd as u64, 0);
+				if dupret < 0 {
+					eprintln!("error during dup: {}", errno_to_str(dupret));
+					exit(1);
+				}
+				close(read_fd);
+				close(write_fd);
+				exec_program(env, &full_right_cmd[0], &full_right_cmd);
+			}
+			close(read_fd);
+			close(write_fd);
+			let _ = waitid(0, 0, 0, 0);
+			let _ = waitid(0, 0, 0, 0);
+			return Ok(());
+		}
+		eprintln!("shell: failed to fork");
+		return Err(fret1);
+	}
+
+	let path = match  resolve_prog_path(env, &args[0]) {
 		Ok(p) => p,
 		Err(_) => {
 			eprintln!("shell: command not found: {}", cmd);
 			return Err(127);
 		}
 	};
-	spawn(&path, &parsed)
+	spawn(env, &path, &parsed)
 }
 
-fn resolve_prog_path(env: &Env, args: &Vec<String>) -> Result<String, i64> {
-	if args[0].contains("/") {
-		let res = open(args[0].as_bytes(), 0);
+fn resolve_prog_path(env: &Env, cmd: &String) -> Result<String, i64> {
+	if cmd.contains("/") {
+		let res = open(cmd.as_bytes(), 0);
 		if res > 0 {
 			close(res);
-			return Ok(String::from(args[0].clone()));
+			return Ok(String::from(cmd.clone()));
 		} else {
 			return Err(127);
 		}
@@ -133,7 +191,7 @@ fn resolve_prog_path(env: &Env, args: &Vec<String>) -> Result<String, i64> {
 				}
 				let mut try_resolve_path = String::from(dirs_path);
 				try_resolve_path.push('/');
-				try_resolve_path.push_str(&args[0]);
+				try_resolve_path.push_str(&cmd);
 				let res = open(try_resolve_path.as_bytes(), 0);
 				if res > 0 {
 					close(res);
@@ -146,31 +204,10 @@ fn resolve_prog_path(env: &Env, args: &Vec<String>) -> Result<String, i64> {
 	return Err(127);
 }
 
-fn spawn(path: &str, args: &Vec<String>) -> Result<(), i64> {
+fn spawn(env: &Env, path: &str, args: &Vec<String>) -> Result<(), i64> {
 	let p = fork();
 	if p == 0 {
-		let mut path_cstr = Vec::with_capacity(path.len() + 1);
-		path_cstr.extend_from_slice(path.as_bytes());
-		path_cstr.push(0);
-		let argc = args.len();
-		let prog_name =  &path.clone();
-		let mut bufs: Vec<Vec<u8>> = Vec::new();
-		for p in args {
-			let mut buf = Vec::with_capacity(p.len() + 1);
-			buf.extend_from_slice(p.as_bytes());
-			buf.push(0);
-			bufs.push(buf);
-		}
-		let mut ptrs = Vec::with_capacity(argc);
-		for buf in &bufs {
-			ptrs.push(buf.as_ptr());
-		}
-		ptrs.push(null());
-		let ret = execve(path_cstr.as_slice(), ptrs.as_ptr(), null());
-		if ret < 0 {
-			eprintln!("shell: {}: {}", errno_to_str(ret),prog_name);
-			exit(ret as u32);
-		} 
+		exec_program(env, path, args);
 	} else if p > 0 {
 		let _ = waitid(0, 0, 0, 0);
 		return Ok(());
@@ -178,9 +215,71 @@ fn spawn(path: &str, args: &Vec<String>) -> Result<(), i64> {
 		eprintln!("shell: failed to fork");
 		exit(p as u32);
 	}
-	Ok(())
 }
 
+/// Owned `execve` arguments. The pointer vectors alias `argv_bufs` and `env_bufs`,
+/// so those buffers stay in this struct for the call.
+struct ExecFrame {
+	path: Vec<u8>,
+	argv_bufs: Vec<Vec<u8>>,
+	argv: Vec<*const u8>,
+	env_bufs: Vec<Vec<u8>>,
+	envp: Vec<*const u8>,
+}
+
+impl ExecFrame {
+	fn new(env: &Env, path: &str, args: &[String]) -> Self {
+		let mut path_buf = Vec::with_capacity(path.len() + 1);
+		path_buf.extend_from_slice(path.as_bytes());
+		path_buf.push(0);
+
+		let mut argv_bufs = Vec::with_capacity(args.len());
+		for arg in args {
+			let mut buf = Vec::with_capacity(arg.len() + 1);
+			buf.extend_from_slice(arg.as_bytes());
+			buf.push(0);
+			argv_bufs.push(buf);
+		}
+		let mut argv = Vec::with_capacity(args.len() + 1);
+		for buf in &argv_bufs {
+			argv.push(buf.as_ptr());
+		}
+		argv.push(null());
+
+		let mut env_bufs = Vec::with_capacity(env.vars.len());
+		for (name, value) in &env.vars {
+			let mut buf = Vec::new();
+			buf.extend_from_slice(name.as_bytes());
+			buf.push(b'=');
+			match value {
+				ShellVar::Int(i) => buf.extend_from_slice(i.to_string().as_bytes()),
+				ShellVar::Str(s) => buf.extend_from_slice(s.as_bytes()),
+			}
+			buf.push(0);
+			env_bufs.push(buf);
+		}
+		let mut envp = Vec::with_capacity(env_bufs.len() + 1);
+		for buf in &env_bufs {
+			envp.push(buf.as_ptr());
+		}
+		envp.push(null());
+
+		Self { path: path_buf, argv_bufs, argv, env_bufs, envp }
+	}
+}
+
+fn exec_program(env: &Env, path: &str, args: &[String]) -> ! {
+	let frame = ExecFrame::new(env, path, args);
+	let ret = execve(frame.path.as_slice(), frame.argv.as_ptr(), frame.envp.as_ptr());
+	eprintln!("shell: {}: {}", errno_to_str(ret), path);
+	exit(ret as u32);
+}
+
+///Return None if the command was not found in the builtin command list
+/// 
+///Return Some(Ok) if the command was a builtin and return successfully
+/// 
+///Return Some(Err) if the command was a builtin and return an error
 fn run_builtin(env: &mut Env, args: &Vec<String>) -> Option<Result<(), i64>> {
 	let cmd = args[0].clone();
 
@@ -209,7 +308,6 @@ fn run_builtin(env: &mut Env, args: &Vec<String>) -> Option<Result<(), i64>> {
 		}
 	};
 	Some(res)
-
 }
 
 fn split_cmd(buf: &Vec<u8>) -> Result<(String, Vec<String>), i64>{
@@ -241,7 +339,6 @@ fn mkdir_wrapper(arg: &Vec<String>) -> Result<(), i64> {
 
 #[derive(Debug, Default)]
 pub struct Env {
-	pub pwd: String,
 	pub history: Vec<String>,
 	pub prompt: String,
 	pub vars: BTreeMap<String, ShellVar>,
@@ -249,7 +346,11 @@ pub struct Env {
 
 impl Env {
 	pub fn update(&mut self) {
-		self.prompt = String::from(format!("\x1b[92m-> \x1b[0m\x1b[94m{}\x1b[0m > ", self.pwd));
+		if let Some(ShellVar::Str(pwd)) = self.get_var(&"PWD".to_string()) {
+			self.prompt = String::from(format!("\x1b[92m-> \x1b[0m\x1b[94m{}\x1b[0m > ", pwd));
+		} else {
+			self.prompt = String::from(format!("\x1b[92m-> \x1b[0m\x1b[94m\x1b[0m > ",));
+		};
 	}
 	pub fn set_var(&mut self, var_name: String, var_value: ShellVar) {
 		if let Some(var) = self.vars.get_mut(&var_name) {
