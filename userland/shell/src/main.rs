@@ -6,7 +6,7 @@ use core::ptr::null;
 
 use builtins::*;
 
-use alloc::{collections::BTreeMap, format, string::{String, ToString}, vec::{self, Vec}};
+use alloc::{collections::BTreeMap, format, string::{String, ToString}, vec::Vec};
 use uhv::*;
 extern crate alloc;
 
@@ -287,7 +287,7 @@ fn run_builtin(env: &mut Env, args: &Vec<String>) -> Option<Result<(), i64>> {
 		"cd" => cd(env, &args),
 		"clear" => clear(),
 		"echo" => echo(env, &args),
-		"exec" => exec(env, &args),
+		"exec" => exec(&args),
 		"exit" => exit(0),
 		"help" => {
 			if args.len() == 1 {
@@ -297,7 +297,6 @@ fn run_builtin(env: &mut Env, args: &Vec<String>) -> Option<Result<(), i64>> {
 			}
 		},
 		"history" => history(env),
-		//"ls" => ls(env, &parsed)?,
 		"mkdir" => mkdir_wrapper(&args),
 		"mkfs" => mkfs(&args),
 		"mount" => builtins::mount(&args),

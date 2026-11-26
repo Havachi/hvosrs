@@ -1,5 +1,4 @@
 use core::ffi::CStr;
-use core::slice;
 use core::sync::atomic::{AtomicIsize, AtomicPtr, Ordering};
 
 static ARGC: AtomicIsize = AtomicIsize::new(0);

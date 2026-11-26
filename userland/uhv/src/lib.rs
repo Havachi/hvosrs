@@ -9,7 +9,6 @@ mod files;
 pub mod args;
 use core::time::Duration;
 
-use alloc::boxed::Box;
 pub use files::*;
 pub use syscalls::*;
 
@@ -35,7 +34,6 @@ pub fn getchar() -> u8 {
 fn panic(_info: &core::panic::PanicInfo) -> ! {
 	eprintln!("userland panic\n");
 	exit(1);
-	loop {}
 }
 
 pub struct Stdout;

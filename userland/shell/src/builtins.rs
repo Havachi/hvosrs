@@ -105,7 +105,7 @@ pub fn clear() -> Result<(), i64> {
 	Ok(())
 }
 
-pub fn exec(env: &Env, arg: &Vec<String>) -> Result<(), i64> {
+pub fn exec(arg: &Vec<String>) -> Result<(), i64> {
 	if arg.len() < 2 {
 		return Err(-22);
 	}

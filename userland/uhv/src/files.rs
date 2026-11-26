@@ -1,5 +1,5 @@
 
-use alloc::{fmt, format, string::String};
+use alloc::fmt;
 use bitflags::bitflags;
 
 bitflags! {
