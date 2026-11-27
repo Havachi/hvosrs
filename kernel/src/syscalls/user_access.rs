@@ -7,7 +7,7 @@ use x86_64::{
 };
 
 use crate::{
-	arch::x86_64::paging::{KERNEL_PML4, switch_pml4}, errno::KernelErrors, memory::{PAGE_SIZE, USER_RANGE, vmm::phys_to_virt}, syscalls::errno::EFAULT,
+	arch::x86_64::paging::{KERNEL_PML4, switch_pml4}, errno::KernelErrors, memory::{PAGE_SIZE, USER_RANGE, vmm::phys_to_virt}, syscalls::handlers::neg,
 };
 
 static SYSCALL_USER_CR3: AtomicU64 = AtomicU64::new(0);
@@ -72,30 +72,30 @@ fn user_host_ptr(user_cr3: u64, virt: VirtAddr) -> Result<*const u8, i64> {
 	let pml4 = unsafe { &*phys_to_virt(PhysAddr::new(user_cr3)).as_ptr::<PageTable>() };
 	let l4 = &pml4[pml4_idx];
 	if !table_pte_ok(l4.flags()) {
-		return Err(EFAULT);
+		return Err(neg(KernelErrors::EFAULT));
 	}
-	let l4_frame = l4.frame().map_err(|_| EFAULT)?;
+	let l4_frame = l4.frame().map_err(|_| neg(KernelErrors::EFAULT))?;
 
 	let pdpt = unsafe { &*phys_to_virt(l4_frame.start_address()).as_ptr::<PageTable>() };
 	let l3 = &pdpt[pdpt_idx];
 	if !table_pte_ok(l3.flags()) {
-		return Err(EFAULT);
+		return Err(neg(KernelErrors::EFAULT));
 	}
-	let l3_frame = l3.frame().map_err(|_| EFAULT)?;
+	let l3_frame = l3.frame().map_err(|_| neg(KernelErrors::EFAULT))?;
 
 	let pd = unsafe { &*phys_to_virt(l3_frame.start_address()).as_ptr::<PageTable>() };
 	let l2 = &pd[pd_idx];
 	if !table_pte_ok(l2.flags()) {
-		return Err(EFAULT);
+		return Err(neg(KernelErrors::EFAULT));
 	}
-	let l2_frame = l2.frame().map_err(|_| EFAULT)?;
+	let l2_frame = l2.frame().map_err(|_| neg(KernelErrors::EFAULT))?;
 
 	let pt = unsafe { &*phys_to_virt(l2_frame.start_address()).as_ptr::<PageTable>() };
 	let l1 = &pt[pt_idx];
 	if !leaf_pte_ok(l1.flags()) {
-		return Err(EFAULT);
+		return Err(neg(KernelErrors::EFAULT));
 	}
-	let l1_frame = l1.frame().map_err(|_| EFAULT)?;
+	let l1_frame = l1.frame().map_err(|_| neg(KernelErrors::EFAULT))?;
 
 	let host = phys_to_virt(l1_frame.start_address()).as_u64() + page_off as u64;
 	Ok(host as *const u8)
@@ -109,11 +109,11 @@ pub fn copy_from_user_into(dst: &mut [u8], src: u64) -> Result<(), i64> {
 		return Ok(());
 	}
 	if !user_range_ok(src, len) {
-		return Err(EFAULT);
+		return Err(neg(KernelErrors::EFAULT));
 	}
 	let user_cr3 = SYSCALL_USER_CR3.load(Ordering::Acquire);
 	if user_cr3 == 0 {
-		return Err(EFAULT);
+		return Err(neg(KernelErrors::EFAULT));
 	}
 
 	let mut offset = 0usize;
@@ -147,7 +147,7 @@ pub fn copy_from_user(len: usize, src: u64) -> Result<Vec<u8>, i64> {
 /// Copy a NUL-terminated string from user space (at most `max_len` bytes, excluding NUL).
 pub fn copy_user_cstr(src: u64, max_len: usize) -> Result<Vec<u8>, i64> {
 	if src == 0 {
-		return Err(EFAULT);
+		return Err(neg(KernelErrors::EFAULT));
 	}
 	let mut out = Vec::new();
 	for i in 0..max_len {
@@ -174,11 +174,11 @@ pub fn copy_to_user(dst: u64, src: &[u8]) -> Result<(), i64> {
 		return Ok(());
 	}
 	if !user_range_ok(dst, len) {
-		return Err(EFAULT);
+		return Err(neg(KernelErrors::EFAULT));
 	}
 	let user_cr3 = SYSCALL_USER_CR3.load(Ordering::Acquire);
 	if user_cr3 == 0 {
-		return Err(EFAULT);
+		return Err(neg(KernelErrors::EFAULT));
 	}
 
 	let mut offset = 0usize;

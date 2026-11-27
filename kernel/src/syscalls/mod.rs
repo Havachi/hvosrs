@@ -1,5 +1,4 @@
-mod errno;
-mod handlers;
+pub mod handlers;
 pub mod user_access;
 
 use core::sync::atomic::Ordering;

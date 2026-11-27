@@ -3,7 +3,7 @@ use alloc::slice;
 use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB}};
 use crate::{
 	arch::x86_64::{paging::{map_phys_page, switch_pml4}, syscall::SyscallFrame}, errno::KernelErrors::{self, EAGAIN}, kstrace, memory::{PAGE_SIZE, USER_HEAP_RANGE, pmm::PhysAllocator}, scheduler::{self, CURRENT_PID, PROCESS_TABLE, add_proc, alloc_fd, block_current, process::{self, find_zombie, fork_child_from, get_cwd, has_waitable_child, reap}, schedule, wake_by_blockedby, with_current_process}, syscalls::{
-		copy_user_args, copy_user_env, errno::EFAULT, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr},
+		copy_user_args, copy_user_env, user_access::{copy_from_user_into, copy_to_user, copy_user_cstr},
 	}, time::{BOOT_EPOCH, EPOCH, SysTime}, vfs::{self, SeekOrigin, file::{AT_FDCWD, VfsFileOpenflags}, get_root_dentry, inode::VfsInodeType, lookup, mkdir, path::{is_absolute, path_basename, path_parent, path_walk}},
 };
 
@@ -35,7 +35,7 @@ pub const SYS_OPENAT: usize = 257;
 const MAX_IO: usize = 4096;
 const MAX_PATH: usize = 4096;
 
-fn neg(e: KernelErrors) -> i64 {
+pub fn neg(e: KernelErrors) -> i64 {
 	e.to_neg_errno()
 }
 
@@ -101,7 +101,7 @@ pub fn sys_write(fd: i32, user_buf: u64, count: usize) -> i64 {
 
 	let mut kbuf = alloc::vec![0u8; count];
 	if copy_from_user_into(&mut kbuf, user_buf).is_err() {
-		return EFAULT;
+		return neg(KernelErrors::EFAULT);
 	}
 	let kbuf2 = kbuf;
 	let fd_idx = fd as usize;
@@ -529,7 +529,7 @@ pub fn sys_pwrite64(fd: i32, user_buf: u64, count: usize, pos: u64) -> i64 {
 
 	let mut buf = alloc::vec![0u8; count];
 	if copy_from_user_into(&mut buf, user_buf).is_err() {
-		return EFAULT;
+		return neg(KernelErrors::EFAULT);
 	}
 	sys_lseek(fd, pos as i64, 0);
 	match fd {
